@@ -136,3 +136,33 @@ Replaying 4,000 test-month transactions normally, then with a simulated upstream
 | baseline | ok | 0.0048 | 3.8% | - |
 | incident | alert | 0.337 | 30.5% | sig_C13, log_amount, amount |
 
+## Crypto: on-chain transaction risk model (Elliptic++, real Bitcoin data)
+
+Strict-inductive, out-of-time: train steps 1-34, validation 35-39, test 40-49; a large dark market shut down at step 43. Per-transaction metrics on labelled test transactions, threshold fixed on validation (max F1).
+
+| Model | Illicit F1 | PR-AUC | ROC-AUC | Precision | Recall | F1 before shutdown | F1 after shutdown |
+|---|---|---|---|---|---|---|---|
+| lightgbm[local] | 0.682 | 0.658 | 0.879 | 87.3% | 56.0% | 0.841 | 0.029 |
+| lightgbm[local+agg] | 0.724 | 0.675 | 0.888 | 94.4% | 58.6% | 0.878 | 0.032 |
+| lightgbm[local+agg+graph] **(champion)** | 0.723 | 0.679 | 0.898 | 97.9% | 57.4% | 0.871 | 0.034 |
+| random_forest[local+agg] | 0.725 | 0.653 | 0.848 | 94.2% | 59.0% | 0.879 | 0.032 |
+
+F1 by test step (champion): {'40': 0.7582, '41': 0.9502, '42': 0.8785, '43': 0.0, '44': 0.0667, '45': 0.0, '46': 0.6667, '47': 0.0, '48': 0.0, '49': 0.0345}. Every model, with or without graph features, collapses after the shutdown: the illicit behaviour that replaced the market was not in the training labels. This is the case for controls that do not depend on the model (sanctions screening, entity attribution, human review) and for fast retraining on fresh labels.
+
+## Crypto: counterparty intelligence (point-in-time)
+
+Events: one per labelled transaction ("a deposit from this transaction's first input address"), 5,272 validation / 11,074 test, 5.7% illicit. Illicit labels become visible 1 step(s) after the activity. Entity features use common-input-ownership clustering replayed step by step.
+
+- Test transactions whose sending address had any history: **27.5%**; whose sending *entity* (via co-inputs) had history: **35.9%**.
+
+| Signals | PR-AUC | ROC-AUC | F1 | F1 before shutdown | F1 after shutdown |
+|---|---|---|---|---|---|
+| tx_model_only | 0.663 | 0.892 | 0.723 | 0.871 | 0.034 |
+| address_history_only | 0.078 | 0.642 | 0.145 | 0.242 | 0.068 |
+| entity_cluster_only | 0.086 | 0.670 | 0.158 | 0.263 | 0.070 |
+| combined | 0.669 | 0.894 | 0.723 | 0.871 | 0.034 |
+
+Serving thresholds (calibrated, fixed on validation): review at 0.031 (>= 50% precision), block at 0.400 (>= 95% precision).
+- Test at the review threshold: flags 8.4% of transactions, precision 42.8%, recall 62.3%.
+- Test at the block threshold: flags 3.9% of transactions, precision 89.3%, recall 60.1%.
+

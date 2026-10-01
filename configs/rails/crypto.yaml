@@ -1,0 +1,53 @@
+# Crypto exchange deposits and withdrawals.
+#
+# Intelligence layers (services/rails.py CryptoScorer), in order of authority:
+#   1. OFAC SDN address screening: hard control. Withdrawal -> block; deposit -> freeze funds (cannot be
+#      refused on-chain) + sanctions report.
+#   2. Counterparty risk: calibrated combiner over the point-in-time address intelligence store
+#      (Elliptic-trained transaction model + delayed illicit attribution + 1-hop exposure).
+#   3. This behavioural scorecard: exchange typologies (account takeover -> withdraw to a new address;
+#      deposit-then-withdraw pass-through by mules or pig-butchering cash-out; one external address
+#      collecting from many accounts), plus the FATF Travel Rule.
+#
+# Points are log-odds priors (no public labelled exchange-account dataset); see bank_transfer.yaml.
+scorecard:
+  version: crypto-scorecard-v1
+  intercept: -5.0
+  thresholds: {review: 0.25, decline: 0.90}
+  weights:
+    - {feature: pair_is_new, op: "==", value: 1.0, points: 0.8, reason: "First use of this external address by the account"}
+    - {feature: amount_usd, op: ">=", value: 10000, points: 0.8, reason: "Large transfer"}
+    - {feature: account_amt_z, op: ">=", value: 3.0, points: 1.0, reason: "Amount far above the account's usual"}
+    - {feature: passthrough_ratio_24h, op: ">=", value: 0.8, points: 1.5, reason: "Withdrawing most of what was deposited in the last 24h (pass-through)"}
+    - {feature: mins_since_last_deposit, op: "<", value: 30, points: 1.0, reason: "Withdrawal within 30 minutes of a deposit"}
+    - {feature: address_n_distinct_account, op: ">=", value: 3, points: 1.5, reason: "External address used by 3+ of our accounts in 30d"}
+    - {feature: account_n_distinct_address, op: ">=", value: 10, points: 0.8, reason: "Account used 10+ external addresses in 30d"}
+    - {feature: new_account, op: "==", value: 1.0, points: 1.0, reason: "Account opened in the last 7 days"}
+    - {feature: account_cnt_1h, op: ">=", value: 5, points: 0.8, reason: "Burst of transfers in the last hour"}
+    - {feature: travel_rule_missing, op: "==", value: 1.0, points: 1.0, reason: "Travel Rule data missing for a VASP transfer above threshold"}
+
+rules:
+  - id: travel_rule_incomplete
+    description: FATF R.16 originator/beneficiary data missing for a hosted-wallet transfer above threshold
+    action: review
+    mode: enforce
+    when:
+      - {feature: travel_rule_missing, op: "==", value: 1.0}
+  - id: rapid_pass_through
+    description: Most of the last 24h of deposits withdrawn within 30 minutes to a never-used address (rapid movement of funds)
+    action: review
+    mode: enforce
+    when:
+      - {feature: passthrough_ratio_24h, op: ">=", value: 0.8}
+      - {feature: mins_since_last_deposit, op: "<", value: 30}
+      - {feature: pair_is_new, op: "==", value: 1.0}
+      - {feature: amount_usd, op: ">=", value: 1000}
+  - id: new_account_large_withdrawal_new_address
+    description: New account withdrawing a large amount to a never-used address (account takeover pattern)
+    action: review
+    mode: enforce
+    when:
+      - {feature: new_account, op: "==", value: 1.0}
+      - {feature: pair_is_new, op: "==", value: 1.0}
+      - {feature: amount_usd, op: ">=", value: 5000}
+      - {feature: direction, op: "==", value: withdrawal}

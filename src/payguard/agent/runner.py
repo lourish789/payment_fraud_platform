@@ -52,12 +52,14 @@ class AgentResult:
     grounding: dict = field(default_factory=dict)
 
 
-SYSTEM_PROMPT = """You are a fraud investigation assistant for a card-payments risk team. A transaction was \
-flagged by the scoring model or the rules engine and a human analyst will make the final call. Your job is \
+SYSTEM_PROMPT = """You are a fraud and financial-crime investigation assistant for a payments risk team covering \
+cards, bank transfers, mobile money and crypto. A payment was flagged by a model, scorecard, rules or sanctions \
+screening and a human analyst will make the final call. Your job is \
 to gather evidence with the tools and file a report with submit_report.
 
 How to investigate:
-- Start with get_case_overview. Then look at the customer and device: history, profiles, and linked entities. \
+- Start with get_case_overview, then get_payment_risk_signals for non-card payments. A sanctions hit is decisive \
+on its own: recommend fraud and say the funds must stay blocked or frozen. Then look at the customer and device: history, profiles, and linked entities. \
 Use find_similar_cases to see how comparable past transactions turned out. If receipts are attached, check them.
 - Weigh evidence the way an experienced analyst would. Confirmed fraud on the same customer or on customers \
 sharing the device is strong evidence. A long, clean, confirmed-legit history is strong evidence the other way. \
@@ -87,6 +89,10 @@ TOOLS = [
     {"name": "get_entity_history", "strict": True,
      "input_schema": _schema({"entity": ENTITY, "limit": {"type": "integer"}}, ["entity", "limit"]),
      "description": "Prior transactions of the customer, device fingerprint or card BIN profile before this one, with decisions and any confirmed labels (limit 1-50)."},
+    {"name": "get_payment_risk_signals", "strict": True, "input_schema": _schema({}, []),
+     "description": "Rail-specific risk signals at decision time: for crypto, OFAC sanctions screening, counterparty "
+                    "address intelligence and Travel Rule status; for bank transfers and mobile money, new-payee, "
+                    "mule fan-in and SIM-swap signals."},
     {"name": "get_linked_entities", "strict": True, "input_schema": _schema({}, []),
      "description": "Other customers seen on this device and other devices used by this customer, with confirmed-fraud counts."},
     {"name": "find_similar_cases", "strict": True, "input_schema": _schema({"k": {"type": "integer"}}, ["k"]),
@@ -116,6 +122,8 @@ def execute_tool(tools: InvestigationTools, ctx: CaseContext, name: str, args: d
         return tools.get_entity_history(ctx, args["entity"], args.get("limit", 15))
     if name == "get_linked_entities":
         return tools.get_linked_entities(ctx)
+    if name == "get_payment_risk_signals":
+        return tools.get_payment_risk_signals(ctx)
     if name == "find_similar_cases":
         return tools.find_similar_cases(ctx, args.get("k", 5))
     if name == "get_receipt_verification":
@@ -240,48 +248,61 @@ class HeuristicProvider:
     def investigate(self, tools, ctx):
         trace: list[dict] = []
 
-        def call(name: str, **args) -> dict:
+        def call(name: str, **args) -> tuple[dict, str]:
             try:
                 out = execute_tool(tools, ctx, name, args)
             except ToolError as e:
                 out = {"error": str(e)}
-            trace.append({"id": f"h{len(trace) + 1}", "tool": name, "input": args, "output": out})
-            return out
+            tid = f"h{len(trace) + 1}"
+            trace.append({"id": tid, "tool": name, "input": args, "output": out})
+            return out, tid
 
-        ov = call("get_case_overview")
-        hist = call("get_entity_history", entity="customer", limit=20)
-        dev_hist = call("get_entity_history", entity="device", limit=20)
-        linked = call("get_linked_entities")
-        similar = call("find_similar_cases", k=7)
+        ov, ov_id = call("get_case_overview")
+        sig_out, sig_id = call("get_payment_risk_signals")
+        signals = sig_out.get("signals") or {}
+        hist, hist_id = call("get_entity_history", entity="customer", limit=20)
+        dev_hist, dev_id = call("get_entity_history", entity="device", limit=20)
+        linked, linked_id = call("get_linked_entities")
+        similar, similar_id = call("find_similar_cases", k=7)
         receipts = [call("get_receipt_verification", receipt_id=r) for r in ov.get("attached_receipts", [])]
 
         p = min(max(ov["model"]["fraud_probability"], 1e-4), 1 - 1e-4)
         logit = math.log(p / (1 - p))
-        evidence = [("Model fraud probability {:.3f} ({})".format(p, ov["model"]["decision"]), "h1")]
+        evidence = [("Model fraud probability {:.3f} ({})".format(p, ov["model"]["decision"]), ov_id)]
+        if signals.get("sanctions_hit") == 1.0:
+            logit += 10.0
+            evidence.append(("Counterparty address is on the OFAC SDN list", sig_id))
+        if signals.get("cp_addr_known_illicit"):
+            logit += 2.0
+            evidence.append(("Counterparty address has known illicit activity", sig_id))
+        if signals.get("recent_sim_swap") == 1.0:
+            logit += 1.5
+            evidence.append(("SIM swapped in the last 48h before this payment", sig_id))
         cf = hist.get("confirmed_fraud_in_recent", 0) or 0
         cl = hist.get("confirmed_legit_in_recent", 0) or 0
         if cf:
             logit += 2.0
-            evidence.append((f"Customer has {cf} confirmed-fraud prior transactions", "h2"))
+            evidence.append((f"Customer has {cf} confirmed-fraud prior transactions", hist_id))
         elif cl >= 3:
             logit -= 1.0
-            evidence.append((f"Customer has {cl} confirmed-legit prior transactions and no confirmed fraud", "h2"))
+            evidence.append((f"Customer has {cl} confirmed-legit prior transactions and no confirmed fraud", hist_id))
         dcf = dev_hist.get("confirmed_fraud_in_recent", 0) or 0
         if dcf:
             logit += 1.0
-            evidence.append((f"Device has {dcf} confirmed-fraud prior transactions", "h3"))
+            evidence.append((f"Device has {dcf} confirmed-fraud prior transactions", dev_id))
         via_dev = linked.get("customers_linked_via_device") or {}
         if via_dev.get("with_confirmed_fraud"):
             logit += 1.0
-            evidence.append((f"{via_dev['with_confirmed_fraud']} other customers on this device have confirmed fraud", "h4"))
+            evidence.append((f"{via_dev['with_confirmed_fraud']} other customers on this device have confirmed fraud",
+                             linked_id))
         share = similar.get("fraud_share_among_similar")
         if share is not None and similar.get("similar"):
             logit += 2.0 * (share - 0.3)
-            evidence.append((f"Fraud share among similar past cases: {share}", "h5"))
-        for i, r in enumerate(receipts):
+            evidence.append((f"Fraud share among similar past cases: {share}", similar_id))
+        for r, rid in receipts:
             if r.get("verdict") in ("mismatch", "suspected_tampering", "not_found"):
                 logit += 2.0
-                evidence.append((f"Attached receipt failed verification: {r['verdict']}", f"h{6 + i}"))
+                evidence.append((f"Attached receipt failed verification: {r['verdict']}", rid))
         q = 1 / (1 + math.exp(-logit))
         if q >= 0.6:
             rec, action = "fraud", "confirm_decline"

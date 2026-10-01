@@ -48,6 +48,7 @@ class Transaction(Base):
     __tablename__ = "transactions"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id"), index=True)
+    rail: Mapped[str] = mapped_column(String(20), default="card", index=True)
     payload: Mapped[dict] = mapped_column(JSON)
     payload_hash: Mapped[str] = mapped_column(String(64))
     event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
@@ -55,6 +56,7 @@ class Transaction(Base):
     bin_key: Mapped[str | None] = mapped_column(String(32), index=True)
     customer_key: Mapped[str | None] = mapped_column(String(32), index=True)
     device_key: Mapped[str | None] = mapped_column(String(32), index=True)
+    counterparty_key: Mapped[str | None] = mapped_column(String(32), index=True)  # payee / wallet / address
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -69,6 +71,7 @@ class DecisionRecord(Base):
     model_version: Mapped[str] = mapped_column(String(40), index=True)
     reasons: Mapped[list] = mapped_column(JSON)
     rules: Mapped[list] = mapped_column(JSON)
+    actions: Mapped[list | None] = mapped_column(JSON, nullable=True)  # e.g. freeze_funds, hold_payment
     features: Mapped[dict] = mapped_column(JSON)  # exact serving-time snapshot (skew audits, retraining)
     explanation: Mapped[list | None] = mapped_column(JSON, nullable=True)  # TreeSHAP, computed async
     shadow: Mapped[dict | None] = mapped_column(JSON, nullable=True)

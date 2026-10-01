@@ -1,10 +1,21 @@
 # PayGuard: real-time payment fraud platform
 
-A production-shaped fraud system built on **590,540 real card-not-present transactions**
-([IEEE-CIS / Vesta](https://www.kaggle.com/c/ieee-fraud-detection)):
+A production-shaped fraud and financial-crime system that makes **every payment method reviewable**:
+cards, bank transfers, mobile money and crypto exchange deposits/withdrawals. All four go through one
+API, one decision record, one analyst queue and one investigation agent. It is built on real data:
+**590,540 card-not-present transactions** ([IEEE-CIS / Vesta](https://www.kaggle.com/c/ieee-fraud-detection)),
+**203,769 Bitcoin transactions** ([Elliptic++](https://huggingface.co/datasets/AI4FinTech/ellipticpp)) and
+the **OFAC SDN sanctioned-address list**.
 
 - **Real-time scoring API.** Atomic, idempotent streaming features; a calibrated LightGBM model; an
   expected-loss decision policy; a rules engine; shadow scoring of a challenger model.
+- **Payment rails** ([docs/PAYMENT_RAILS.md](docs/PAYMENT_RAILS.md)). Each rail has its own risk logic:
+  - **Bank transfer:** authorised-push-payment scam and mule fan-in signals.
+  - **Mobile money:** SIM-swap and cash-out signals.
+  - **Crypto:** OFAC screening, an on-chain transaction model, point-in-time entity intelligence via
+    address clustering, exchange typologies (pass-through, collection addresses) and the FATF Travel Rule.
+  - Every decision also carries `required_actions`. For example, a crypto deposit can't be refused
+    on-chain, so it's frozen instead.
 - **Case management.** An analyst queue fed through a transactional outbox and an event bus.
 - **Investigation agent.** Claude with read-only, point-in-time tools, and a deterministic baseline it is
   measured against.
@@ -27,8 +38,11 @@ regenerated from artifacts by `python -m payguard.report`. Full tables are in [d
 | **Drift monitor** | Healthy traffic: `ok`. Simulated upstream data bug: `alert`, names the broken signal, flag rate 3.8% → 30.5% |
 | **Investigation agent** | Deterministic baseline: 86.0% accuracy against 83.0% for the model alone on the same 171 cases; 100% of report claims grounded in tool output |
 | **Receipt verification** | With ledger reconciliation: 100% of 4 forgery types caught, 100% of genuine receipts verified (synthetic set). Pixel forensics alone: 33–60% |
+| **Crypto transaction model** | Elliptic++, strict time-ordered split: illicit F1 0.723, precision 98%. F1 **0.87 before** a dark-market shutdown and **0.03 after**, for every model including Random Forest and graph features |
+| **Crypto counterparty intelligence** | Block threshold: flags 3.9% of test transactions at 89% precision and 60% recall. Address clustering through the scored transaction's co-inputs raises sender coverage from 27.5% to 35.9% |
+| **All rails, end to end** | `scripts/smoke_test.py`: 48/48 live checks. A real OFAC address is blocked on withdrawal and frozen on deposit; a real illicit Elliptic transaction is flagged and a licit one approved |
 
-Four things the evaluation showed that I did not expect, and what I did about each:
+Four things the card evaluation showed that I did not expect, and what I did about each:
 
 1. **The rules made things worse.** Model + all hand-written rules nets $264k, *less* than the model alone
    ($303k). Every heuristic rule had marginal precision below the 3.4% base fraud rate. They now run in
@@ -45,11 +59,25 @@ Four things the evaluation showed that I did not expect, and what I did about ea
 The weakest slice is transactions over $1,000 (ROC-AUC 0.755), which is where fraud dollars concentrate.
 That is the next thing to fix.
 
+And four from the crypto work:
+
+1. **Elliptic++ wallet features leak the future.** All 55 are lifetime aggregates, identical at every
+   time step, so a wallet "knows" its last-seen block at its first appearance. I don't use them.
+2. **Graph structure buys very little under a strict time-ordered protocol.** A Random Forest on
+   transaction features ties the graph-feature model on F1. This matches a 2026 re-evaluation showing
+   that earlier GNN gains came from test-period graph leakage.
+3. **No model survives the dark-market shutdown** (F1 0.87 → 0.03). That is the argument for the
+   controls that don't depend on the model: sanctions screening, entity attribution, human review and
+   fast retraining.
+4. **Address-level history is weak on Bitcoin** because addresses are rarely reused. Entity resolution
+   through the scored transaction's co-inputs is what makes attribution carry over, which is how
+   commercial KYT systems use the common-input heuristic.
+
 ## Architecture
 
 ```mermaid
 flowchart LR
-    M[Merchant / PSP] -->|POST /v1/transactions/score| API
+    M[Merchant / PSP / exchange] -->|POST /v1/payments/score<br/>card, bank_transfer, mobile_money, crypto| API
     subgraph API[Scoring API - FastAPI]
         direction TB
         IDEM[Idempotency check] --> FS[Feature pipeline]
@@ -100,6 +128,9 @@ pip install -e ".[vision,dev]"
 payguard ingest        # download from the HF mirror, sha256-verify, normalise to Parquet (~2 min)
 payguard backfill      # offline features via the serving code, plus online snapshot (~6 min)
 payguard train         # train, calibrate, fit policy, evaluate, register (~10 min with ablations)
+payguard crypto-ingest # Elliptic++ + OFAC SDN addresses (~1 GB)
+payguard crypto-train  # on-chain transaction model, strict time-ordered evaluation (~9 min)
+payguard crypto-intel  # address/entity intelligence store + counterparty-risk combiner (~5 min)
 
 payguard create-client --name shop --role merchant    # prints an API key (shown once)
 payguard create-client --name ops  --role analyst
@@ -126,15 +157,16 @@ payguard vision-eval
 payguard drift-demo
 payguard loadtest --key $KEY --n 2000 --concurrency 4 --label "API only"   # against a running `payguard serve`
 python -m payguard.report  # regenerates docs/EVALUATION.md from artifacts/
-pytest                     # 31 tests (-m "not slow" skips the OCR test)
+pytest                     # 41 tests (-m "not slow" skips the OCR test)
 ```
 
 `run_all.sh` runs backfill, train, replay, parity, the agent eval and the drift drill in one go (about 40
 minutes on a laptop).
 
 End-to-end check of **every HTTP endpoint** against a running server, using 600 real test-month
-transactions as sample data. It runs 39 checks: auth and roles, validation, scoring, idempotency, cases,
-explanations, receipts, the agent, feedback, drift, the registry and metrics.
+transactions as sample data, plus real OFAC addresses and real Elliptic transactions for crypto. It runs 48
+checks: auth and roles, validation, scoring, idempotency, cases, explanations, receipts, the agent, feedback,
+every payment rail, drift, the registry and metrics.
 
 ```bash
 payguard serve --port 8020        # after creating merchant, analyst and admin keys with create-client
@@ -148,7 +180,8 @@ Full stack (Postgres, Redis and separate worker processes): `docker compose up` 
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
-| POST | `/v1/transactions/score` | merchant | Decision, calibrated probability, expected loss, reason codes (idempotent) |
+| POST | `/v1/payments/score` | merchant | Any rail (`rail`: card, bank_transfer, mobile_money, crypto): decision, risk, reasons, `required_actions` (idempotent) |
+| POST | `/v1/transactions/score` | merchant | Card-only endpoint (same pipeline), kept for compatibility |
 | GET | `/v1/transactions/{id}` | analyst | Payload, decision, shadow score, label |
 | GET | `/v1/cases` | analyst | Queue ordered by expected loss, with the agent's recommendation |
 | GET | `/v1/cases/{id}` | analyst | Case, model explanation, investigations, receipts |
@@ -166,22 +199,36 @@ Full stack (Postgres, Redis and separate worker processes): `docker compose up` 
 ```
 src/payguard/
   data/        ingest (download + verify), adapter (IEEE row -> canonical schema), out-of-time splits
-  features/    decayed-aggregate state, online stores (memory / Redis), the shared pipeline, backfill
+  features/    decayed-aggregate state, online stores (memory / Redis), card pipeline, rail entities, backfill
   models/      encoder, training + evaluation, calibration, expected-loss policy, registry
-  services/    scoring service (the request path), async TreeSHAP explanations
+  services/    scoring service (shared request path), per-rail scorers, async TreeSHAP explanations
   api/         FastAPI app, routes, auth + rate limiting
-  agent/       investigation tools, Claude + heuristic providers, evaluation harness
+  agent/       investigation tools (rail-aware), Claude + heuristic providers, evaluation harness
+  crypto/      Elliptic++ ingest, transaction risk model, OFAC screening, entity clustering, address intelligence
   vision/      receipt rendering/forgery (evaluation), OCR + ledger + ELA verifier, evaluation
   events.py    outbox + event bus        workers.py   relay + investigation consumer
   rules.py     declarative rules          monitoring.py  PSI drift
   simulate.py  replay, parity, load test, drift drill
 scripts/       smoke_test.py: end-to-end check of every endpoint with real sample transactions
-configs/       rules.yaml, policy.yaml, prometheus.yml
+configs/       rules.yaml, policy.yaml, prometheus.yml, rails/{bank_transfer,mobile_money,crypto}.yaml
 docs/          DECISIONS.md, EVALUATION.md (generated), RUNBOOK.md
-tests/         31 tests: feature math + stationarity, store parity, API contracts, concurrency, agent loop + safety, vision
+tests/         41 tests: feature math + stationarity, store parity, API contracts, concurrency, agent loop + safety,
+               vision, every payment rail (sanctions, mule fan-in, SIM swap, pass-through, Travel Rule)
 ```
 
 ## Honest limitations
+
+- **The non-card rails have no labelled training data.** Bank transfer and mobile money run transparent
+  scorecards whose points are research-based priors (in YAML, each with its reason). They are not fitted
+  weights. Analyst resolutions and chargebacks feed the labels table that a trained model will need.
+- **The crypto data is Bitcoin from 2016-17.** On-chain intelligence (the transaction model and address
+  clustering) exists only for Bitcoin. Account-based chains (Ethereum, Tron) need different entity
+  resolution, so on them the crypto rail runs sanctions screening, the behavioural scorecard and the
+  Travel Rule, and labels its model version accordingly. Exposure is one hop and count-based, not
+  multi-hop value-weighted tracing.
+- **Exchange-behaviour typologies are tested on constructed scenarios.** Pass-through, collection
+  addresses and new-account withdrawals are checked in `tests/test_rails.py`, not on a real exchange
+  ledger. There is no public labelled one.
 
 - **The data is real, but the setting is e-commerce cards in 2017-18.** It is not Nigerian mobile money.
   The schema and policy are generic, and the receipt-verification module targets the fake-transfer-alert

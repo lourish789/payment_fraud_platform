@@ -200,7 +200,59 @@ def render(artifacts: Path) -> str:
         for name, d in dd.items():
             w(f"| {name} | {d['status']} | {d['score_psi']} | {_pct(d['flag_rate'])} | {', '.join(d['drifted_features']) or '-'} |")
         w("")
+    _crypto(artifacts, w)
     return "\n".join(L) + "\n"
+
+
+def _crypto(artifacts: Path, w) -> None:
+    root = artifacts / "models" / "crypto"
+    if not (root / "champion.txt").exists():
+        return
+    d = root / (root / "champion.txt").read_text().strip()
+    meta = json.loads((d / "metadata.json").read_text())["report"]
+    w("## Crypto: on-chain transaction risk model (Elliptic++, real Bitcoin data)\n")
+    p = meta["protocol"]
+    w(f"Strict-inductive, out-of-time: train steps {p['train_steps'][0]}-{p['train_steps'][1]}, validation "
+      f"{p['valid_steps'][0]}-{p['valid_steps'][1]}, test {p['test_steps'][0]}-{p['test_steps'][1]}; a large dark "
+      f"market shut down at step {p['dark_market_shutdown_step']}. Per-transaction metrics on labelled test "
+      "transactions, threshold fixed on validation (max F1).\n")
+    w("| Model | Illicit F1 | PR-AUC | ROC-AUC | Precision | Recall | F1 before shutdown | F1 after shutdown |")
+    w("|---|---|---|---|---|---|---|---|")
+    for name, v in meta["variants"].items():
+        t, pre, post = v["test"], v["test_pre_shutdown"], v["test_post_shutdown"] or {}
+        w(f"| {name}{' **(champion)**' if name == meta['champion']['variant'] else ''} | {t['illicit_f1']:.3f} | "
+          f"{t['pr_auc']:.3f} | {t['roc_auc']:.3f} | {_pct(t['precision'])} | {_pct(t['recall'])} | "
+          f"{pre['illicit_f1']:.3f} | {post.get('illicit_f1', float('nan')):.3f} |")
+    champ = meta["variants"][meta["champion"]["variant"]]
+    w(f"\nF1 by test step (champion): {champ['f1_by_step']}. Every model, with or without graph features, "
+      "collapses after the shutdown: the illicit behaviour that replaced the market was not in the training "
+      "labels. This is the case for controls that do not depend on the model (sanctions screening, entity "
+      "attribution, human review) and for fast retraining on fresh labels.\n")
+    cb = _load(d / "combiner.json")
+    if cb:
+        r, c = cb["report"], cb["combiner"]
+        w("## Crypto: counterparty intelligence (point-in-time)\n")
+        w(f"Events: one per labelled transaction (\"a deposit from this transaction's first input address\"), "
+          f"{r['n_valid_events']:,} validation / {r['n_test_events']:,} test, {_pct(r['test_illicit_share'])} "
+          f"illicit. Illicit labels become visible {r['label_delay_steps']} step(s) after the activity. Entity "
+          "features use common-input-ownership clustering replayed step by step.\n")
+        w(f"- Test transactions whose sending address had any history: **{_pct(r['test_coverage_address_seen_before'])}**; "
+          f"whose sending *entity* (via co-inputs) had history: **{_pct(r['test_coverage_entity_seen_before'])}**.")
+        w("")
+        w("| Signals | PR-AUC | ROC-AUC | F1 | F1 before shutdown | F1 after shutdown |")
+        w("|---|---|---|---|---|---|")
+        for name, v in r["variants"].items():
+            post = v["test_f1_post_shutdown"]
+            w(f"| {name} | {v['test_pr_auc']:.3f} | {v['test_roc_auc']:.3f} | {v['test_f1']:.3f} | "
+              f"{v['test_f1_pre_shutdown']:.3f} | {'n/a' if post is None else f'{post:.3f}'} |")
+        w(f"\nServing thresholds (calibrated, fixed on validation): review at {c['review_threshold']:.3f} "
+          f"(>= 50% precision), block at {c['block_threshold']:.3f} (>= 95% precision).")
+        for band in ("review", "block"):
+            op = r.get(f"test_at_{band}_threshold")
+            if op:
+                w(f"- Test at the {band} threshold: flags {_pct(op['flag_rate'])} of transactions, precision "
+                  f"{_pct(op['precision'])}, recall {_pct(op['recall'])}.")
+        w("")
 
 
 if __name__ == "__main__":

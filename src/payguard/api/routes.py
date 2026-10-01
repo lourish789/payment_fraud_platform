@@ -17,8 +17,8 @@ from payguard.api.security import Principal
 from payguard.db.models import Case, DecisionRecord, Investigation, Label, Receipt, Transaction, utcnow
 from payguard.events import enqueue
 from payguard.monitoring import drift_report
-from payguard.schemas import ScoreResponse, TransactionIn
-from payguard.services.scoring import IdempotencyConflict
+from payguard.schemas import PaymentIn, ScoreResponse, TransactionIn
+from payguard.services.scoring import IdempotencyConflict, RailNotEnabled
 
 router = APIRouter()
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
@@ -55,15 +55,29 @@ def require(role: str):
 
 
 # ---- scoring -------------------------------------------------------------------------------------
-@router.post("/v1/transactions/score", response_model=ScoreResponse, tags=["scoring"])
-def score(txn: TransactionIn, request: Request, p: Principal = Depends(require("merchant"))):
-    """Score a transaction. Idempotent on transaction_id: retries return the original decision."""
+def _score(payment, request: Request, p: Principal) -> ScoreResponse:
     try:
-        return _c(request).scoring.score(txn, p.client_id)
+        return _c(request).scoring.score(payment, p.client_id)
     except IdempotencyConflict:
         raise _err(409, "idempotency_conflict", "transaction_id already used with a different payload")
+    except RailNotEnabled as e:
+        raise _err(400, "rail_not_enabled", f"payment rail '{e}' is not enabled on this deployment")
     except RuntimeError as e:
         raise _err(503, "unavailable", str(e))
+
+
+@router.post("/v1/transactions/score", response_model=ScoreResponse, tags=["scoring"])
+def score(txn: TransactionIn, request: Request, p: Principal = Depends(require("merchant"))):
+    """Score a card transaction. Idempotent on transaction_id: retries return the original decision."""
+    return _score(txn, request, p)
+
+
+@router.post("/v1/payments/score", response_model=ScoreResponse, tags=["scoring"])
+def score_payment(payment: PaymentIn, request: Request, p: Principal = Depends(require("merchant"))):
+    """Score a payment on any rail: card, bank_transfer, mobile_money or crypto (select with `rail`).
+    Every rail lands in the same case queue. `required_actions` says what to do beyond the decision
+    (e.g. a crypto deposit cannot be declined on-chain, so a sanctions hit returns freeze_funds)."""
+    return _score(payment, request, p)
 
 
 @router.get("/v1/transactions/{transaction_id}", tags=["scoring"])

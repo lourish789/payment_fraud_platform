@@ -73,6 +73,9 @@ def main(argv: list[str] | None = None) -> int:
     ae.add_argument("--n", type=int, default=100)
     ae.add_argument("--provider", default="auto", choices=["auto", "claude", "heuristic"])
     sub.add_parser("vision-eval")
+    sub.add_parser("crypto-ingest", help="download Elliptic++ and the OFAC SDN address list")
+    sub.add_parser("crypto-train", help="train + evaluate the on-chain transaction risk model")
+    sub.add_parser("crypto-intel", help="build the point-in-time address intelligence store + counterparty combiner")
     sub.add_parser("drift-demo")
     a = ap.parse_args(argv)
     s = get_settings()
@@ -81,6 +84,21 @@ def main(argv: list[str] | None = None) -> int:
         from payguard.data.ingest import ingest
 
         print(ingest())
+    elif a.cmd == "crypto-ingest":
+        from payguard.crypto.data import ingest as crypto_ingest
+
+        _json(crypto_ingest(s.raw_dir / "crypto", s.processed_dir))
+    elif a.cmd == "crypto-train":
+        from payguard.crypto.model import train as crypto_train
+
+        print(crypto_train(s.processed_dir, s.raw_dir / "crypto", s.models_dir))
+    elif a.cmd == "crypto-intel":
+        from payguard.crypto.intel import AddressIntel, build, fit_combiner
+
+        d = s.crypto_dir / (s.crypto_dir / "champion.txt").read_text().strip()
+        _json(build(d, s.raw_dir / "crypto", d / "address_intel.db"))
+        _save("crypto_combiner", fit_combiner(AddressIntel.open(d / "address_intel.db"), s.raw_dir / "crypto", d,
+                                              d / "combiner.json"))
     elif a.cmd == "backfill":
         from payguard.features.backfill import backfill
 

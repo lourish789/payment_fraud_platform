@@ -1,0 +1,39 @@
+# Bank transfers (NIP / Faster Payments / RTP / ACH / wire): push payments, irrevocable once sent.
+# Dominant risk: authorised push payment (APP) scams, where the victim is socially engineered into
+# paying a mule account. Signals follow UK Finance / industry typologies: a new payee combined with a
+# large amount and an unusual time is far riskier than any one factor; mule accounts show fan-in from
+# many unrelated senders in a short window.
+#
+# Scorecard points are log-odds PRIORS, not fitted weights: there is no public labelled APP dataset.
+# p = sigmoid(intercept + sum(points)). Replace with a trained model once analyst resolutions
+# (POST /v1/cases/{id}/resolve) and scheme reimbursement claims (POST /v1/labels) accumulate.
+scorecard:
+  version: bank_transfer-scorecard-v1
+  intercept: -5.0                    # ~0.7% prior risk
+  thresholds: {review: 0.20, decline: 0.85}
+  weights:
+    - {feature: pair_is_new, op: "==", value: 1.0, points: 1.2, reason: "First transfer to this payee"}
+    - {feature: amount_usd, op: ">=", value: 1000, points: 0.8, reason: "Large transfer"}
+    - {feature: amount_usd, op: ">=", value: 5000, points: 0.8, reason: "Very large transfer"}
+    - {feature: sender_amt_z, op: ">=", value: 3.0, points: 1.0, reason: "Amount far above sender's usual"}
+    - {feature: beneficiary_n_distinct_sender, op: ">=", value: 5, points: 2.0, reason: "Beneficiary received from 5+ different senders in 72h (mule fan-in)"}
+    - {feature: beneficiary_n_distinct_sender, op: ">=", value: 10, points: 1.5, reason: "Beneficiary received from 10+ different senders in 72h"}
+    - {feature: beneficiary_is_new, op: "==", value: 1.0, points: 0.5, reason: "Beneficiary account never seen before"}
+    - {feature: new_account, op: "==", value: 1.0, points: 0.8, reason: "Sender account opened in the last 7 days"}
+    - {feature: hour, op: "<", value: 5, points: 0.5, reason: "Unusual hour"}
+    - {feature: sender_cnt_1h, op: ">=", value: 3, points: 1.0, reason: "Burst of transfers from sender in the last hour"}
+
+rules:
+  - id: mule_fan_in_hard
+    description: Beneficiary received from 20+ different senders in 72h
+    action: review
+    mode: enforce
+    when:
+      - {feature: beneficiary_n_distinct_sender, op: ">=", value: 20}
+  - id: new_payee_very_large
+    description: First transfer to this payee above the confirmation-of-payee hold limit
+    action: review
+    mode: enforce
+    when:
+      - {feature: pair_is_new, op: "==", value: 1.0}
+      - {feature: amount_usd, op: ">=", value: 10000}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import threading
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
@@ -46,6 +46,20 @@ def make_session_factory(engine: Engine) -> sessionmaker:
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
+# Additive columns introduced after the first release: (table, column, SQL type and default).
+_ADDED_COLUMNS = [
+    ("transactions", "rail", "VARCHAR(20) DEFAULT 'card'"),
+    ("transactions", "counterparty_key", "VARCHAR(32)"),
+    ("decisions", "actions", "JSON"),
+]
+
+
 def init_db(engine: Engine) -> None:
-    # Dev convenience. A production deploy would run Alembic migrations instead of create_all.
+    # Dev convenience: create_all plus additive column migrations. A production deploy would run
+    # Alembic migrations instead.
     Base.metadata.create_all(engine)
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, column, ddl in _ADDED_COLUMNS:
+            if column not in {c["name"] for c in insp.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))

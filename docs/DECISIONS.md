@@ -172,6 +172,58 @@ every month the model stays in production. I accepted it.
 **Lesson.** A drift monitor that alerts on healthy traffic gets muted, and then it misses the real
 incident. Running the drill on clean data first is what exposed this.
 
+## ADR-12: One scoring pipeline, one scorer per payment rail
+
+**Decision.** `ScoringService` owns idempotency, persistence, cases and the outbox. A `RailScorer` per
+rail owns features, models, rules and intelligence, and returns an `Assessment`. Scorers never touch
+the database; the service never knows how a rail scores.
+
+**Why.** "Every payment method is reviewable" is a property of the pipeline, not of each model. With one
+pipeline, a new rail inherits retries, audit trail, analyst queue, agent, labels and metrics for free.
+The alternatives were a separate service per rail, which means duplicated case management and split
+queues, or one giant model over all rails, which means incompatible features and no per-rail
+accountability. Both are worse.
+
+**Detail.** `required_actions` extends approve/review/decline because rails differ in what is
+reversible. A crypto deposit is already on-chain and cannot be refused, so a "decline" becomes
+`freeze_funds`. Push payments are irrevocable once sent, so a review means `hold_payment` first.
+
+## ADR-13: Sanctions screening is a control, not a feature
+
+**Decision.** An OFAC SDN address hit decides the outcome directly (block or freeze, plus a report)
+before any model or scorecard is consulted. Screening is conservative: EVM addresses are matched
+case-insensitively, bech32 addresses are lower-cased, base58 addresses are matched case-sensitively, and
+a string listed under any asset matches regardless of the chain the caller claims.
+
+**Why.** A sanctions match is a legal obligation. Blending it into a probability would let other signals
+dilute it, and a model can't be audited the way a list match can.
+
+## ADR-14: Crypto intelligence is evaluated strictly time-ordered, and the leaky features are refused
+
+**Decision.**
+- Train, validate and test on disjoint, ordered time steps.
+- Compute graph features only from same-step neighbours, with out-of-fold first-stage scores.
+- Make illicit labels visible only after a delay.
+- Replay entity clustering step by step.
+- Don't use the Elliptic++ wallet features (lifetime aggregates).
+- Read transaction IDs as int64 and validate the label join.
+
+**Why.** Every one of these traps was real here. Wallet features would have leaked the future. Float32
+IDs silently dropped three-quarters of the labels. Published GNN results on this dataset were inflated
+by test-period adjacency. The honest result (F1 0.87 before the dark-market shutdown, 0.03 after) is
+more useful than a leaky 0.95, because it says what the model cannot do.
+
+## ADR-15: Review and block thresholds come from precision targets
+
+**Decision.** Counterparty-risk thresholds are the lowest calibrated scores reaching 50% (review) and
+95% (block) precision on validation, with `review <= block` enforced.
+
+**Why.** An earlier version defined "block" as the lowest score reaching 90% precision and "review" as
+the max-F1 point. These came out inverted (block 0.27 < review 0.67), which would have declined
+everything above the lower bar and left the review band empty. Tying each band to the cost of its
+error (an analyst's time vs. a customer blocked without a human) makes the ordering structural rather
+than accidental.
+
 ## What I would do next
 
 - Replace the dev-mode SQLite with Postgres everywhere (compose already does) and add Alembic migrations.
@@ -179,3 +231,7 @@ incident. Running the drill on clean data first is what exposed this.
 - Label-delay-aware retraining: train only on transactions whose chargeback window has closed.
 - pgvector for `find_similar_cases` instead of the in-process scan.
 - A small labelled set of real receipts (with consent) to replace the synthetic vision evaluation.
+- Crypto: multi-hop, value-weighted taint tracing; entity resolution for account-based chains (deposit
+  address reuse, contract interactions); cross-chain bridge tracing.
+- Replace the bank-transfer and mobile-money scorecards with trained models once resolutions and
+  scheme reimbursement claims provide labels.

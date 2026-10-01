@@ -1,0 +1,28 @@
+# Mobile money (M-Pesa / MoMo / OPay-style wallets). Dominant risks: account takeover via SIM swap,
+# social-engineering transfers to mule wallets, and rapid cash-out through agents. A transfer or
+# cash-out shortly after a SIM swap is the single strongest takeover signal in the industry.
+#
+# Points are log-odds priors (no public labelled dataset with these fields); see bank_transfer.yaml.
+scorecard:
+  version: mobile_money-scorecard-v1
+  intercept: -5.0
+  thresholds: {review: 0.20, decline: 0.90}
+  weights:
+    - {feature: recent_sim_swap, op: "==", value: 1.0, points: 3.0, reason: "SIM swapped in the last 48h"}
+    - {feature: is_cash_out, op: "==", value: 1.0, points: 0.6, reason: "Cash-out"}
+    - {feature: pair_is_new, op: "==", value: 1.0, points: 0.8, reason: "First payment to this wallet"}
+    - {feature: amount_usd, op: ">=", value: 300, points: 0.8, reason: "Large for mobile money"}
+    - {feature: sender_amt_z, op: ">=", value: 3.0, points: 1.0, reason: "Amount far above sender's usual"}
+    - {feature: receiver_n_distinct_sender, op: ">=", value: 5, points: 2.0, reason: "Receiver wallet paid by 5+ senders in 72h (mule fan-in)"}
+    - {feature: agent_n_distinct_sender, op: ">=", value: 15, points: 1.0, reason: "Agent cashing out for many wallets today"}
+    - {feature: new_account, op: "==", value: 1.0, points: 0.8, reason: "Wallet opened in the last 7 days"}
+    - {feature: sender_cnt_1h, op: ">=", value: 4, points: 1.0, reason: "Burst of transactions in the last hour"}
+
+rules:
+  - id: sim_swap_cash_out
+    description: Cash-out or large transfer within 48h of a SIM swap
+    action: review
+    mode: enforce
+    when:
+      - {feature: recent_sim_swap, op: "==", value: 1.0}
+      - {feature: amount_usd, op: ">=", value: 50}

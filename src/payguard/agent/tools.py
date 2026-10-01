@@ -88,12 +88,18 @@ class InvestigationTools:
             dec = s.scalar(select(DecisionRecord).where(DecisionRecord.transaction_id == ctx.transaction_id))
             receipts = s.scalars(select(Receipt.id).where(Receipt.case_id == ctx.case_id)).all()
         p = tx.payload
+        rail = tx.rail or "card"
+        if rail == "card":
+            details = {"product_code": p.get("product_code"), "card": {k: p["card"].get(k) for k in ("network", "type")},
+                       "payer_email_domain": p.get("payer_email_domain"),
+                       "recipient_email_domain": p.get("recipient_email_domain"),
+                       "billing_region": p["billing"].get("region")}
+        else:
+            details = {k: p.get(k) for k in RAIL_DETAIL_FIELDS[rail]}
         return _safe({
-            "case_id": ctx.case_id, "transaction_id": tx.id, "event_time": ctx.as_of.isoformat(),
-            "amount": tx.amount, "currency": p.get("currency"), "product_code": p.get("product_code"),
-            "card": {k: p["card"].get(k) for k in ("network", "type")},
-            "payer_email_domain": p.get("payer_email_domain"), "recipient_email_domain": p.get("recipient_email_domain"),
-            "device": p.get("device"), "billing_region": p["billing"].get("region"),
+            "case_id": ctx.case_id, "transaction_id": tx.id, "rail": rail, "event_time": ctx.as_of.isoformat(),
+            "amount": tx.amount, "currency": p.get("currency"), "amount_usd": p.get("amount_usd"),
+            "details": details, "device": p.get("device"), "required_actions": dec.actions or [],
             "model": {"decision": dec.decision, "fraud_probability": dec.fraud_probability,
                       "expected_loss": dec.expected_loss, "model_version": dec.model_version},
             "model_reasons": [e["detail"] for e in (dec.explanation or (
@@ -101,6 +107,18 @@ class InvestigationTools:
             "rules_triggered": dec.rules,
             "attached_receipts": list(receipts),
         })
+
+    def get_payment_risk_signals(self, ctx: CaseContext) -> dict:
+        """Rail-specific risk signals exactly as computed at decision time: sanctions screening, counterparty
+        intelligence and Travel Rule for crypto; payee/mule/SIM-swap signals for push payments."""
+        with self.sf() as s:
+            tx = s.get(Transaction, ctx.transaction_id)
+            feats = s.scalar(select(DecisionRecord.features).where(DecisionRecord.transaction_id == ctx.transaction_id))
+        rail = tx.rail or "card"
+        if rail == "card":
+            return {"rail": "card", "note": "card signals are in get_case_overview and get_entity_profile"}
+        keys = RAIL_SIGNALS[rail]
+        return _safe({"rail": rail, "signals": {k: feats.get(k) for k in keys if k in feats}})
 
     def get_entity_profile(self, ctx: CaseContext, entity: str) -> dict:
         """Streaming-feature snapshot for the entity exactly as the model saw it at decision time."""
@@ -204,6 +222,24 @@ class InvestigationTools:
             return _safe({"receipt_id": r.id, "verdict": r.verdict, "claimed_reference": r.claimed_reference,
                           "checks": r.result.get("checks"), "extracted": r.result.get("extracted")})
 
+
+RAIL_DETAIL_FIELDS = {
+    "bank_transfer": ["account_id", "beneficiary_account", "beneficiary_bank", "beneficiary_name", "channel", "scheme",
+                      "account_age_days"],
+    "mobile_money": ["account_id", "kind", "counterparty_wallet", "agent_id", "sim_swap_days", "account_age_days"],
+    "crypto": ["account_id", "direction", "asset", "chain", "counterparty_address", "tx_hash", "counterparty_vasp",
+               "travel_rule", "account_age_days"],
+}
+RAIL_SIGNALS = {
+    "bank_transfer": ["pair_is_new", "beneficiary_is_new", "beneficiary_n_distinct_sender", "sender_amt_z",
+                      "sender_cnt_1h", "new_account", "amount_usd"],
+    "mobile_money": ["recent_sim_swap", "sim_swap_days", "is_cash_out", "pair_is_new", "receiver_n_distinct_sender",
+                     "agent_n_distinct_sender", "sender_amt_z", "new_account", "amount_usd"],
+    "crypto": ["sanctions_hit", "counterparty_risk", "cp_tx_risk", "cp_addr_seen", "cp_prior_txs", "cp_addr_max_prior_risk",
+               "cp_addr_known_illicit", "cp_counterparties", "cp_illicit_counterparties", "travel_rule_required",
+               "travel_rule_missing", "counterparty_hosted", "pair_is_new", "address_n_distinct_account",
+               "passthrough_ratio_24h", "mins_since_last_deposit", "new_account", "amount_usd"],
+}
 
 SIMILARITY_FEATURES = [
     "log_amount", "hour", "customer_cnt_24h", "customer_cnt_7d", "customer_amt_z", "customer_is_new",

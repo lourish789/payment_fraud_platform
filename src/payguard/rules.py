@@ -54,8 +54,12 @@ class RuleEngine:
     @classmethod
     def from_yaml(cls, path: Path) -> "RuleEngine":
         doc = yaml.safe_load(path.read_text()) or {}
+        return cls.from_dict(doc.get("rules", []))
+
+    @classmethod
+    def from_dict(cls, items: list[dict]) -> "RuleEngine":
         rules = []
-        for r in doc.get("rules", []):
+        for r in items:
             if not r.get("enabled", True):
                 continue
             conds = []

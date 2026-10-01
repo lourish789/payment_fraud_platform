@@ -47,6 +47,38 @@ class Container:
     explainer: Explainer
 
 
+def build_scorers(settings: Settings, store: FeatureStore, models: ModelHolder, rules: RuleEngine) -> dict:
+    """One scorer per enabled rail. Crypto intelligence is optional: without a trained intel store the
+    crypto rail still screens sanctions and runs its behavioural scorecard (and says so in its version)."""
+    from payguard.crypto.intel import AddressIntel, CounterpartyRisk
+    from payguard.crypto.screening import SanctionsScreener
+    from payguard.services.rails import CardScorer, CryptoScorer, ScorecardScorer
+
+    scorers: dict = {}
+    for rail in settings.rails_enabled:
+        if rail == "card":
+            scorers[rail] = CardScorer(FeaturePipeline(store), models, rules)
+        elif rail in ("bank_transfer", "mobile_money"):
+            scorers[rail] = ScorecardScorer(rail, store, settings.rails_config_dir, settings.travel_rule_threshold_usd)
+        elif rail == "crypto":
+            screener = SanctionsScreener.load(settings.sanctions_dir) if settings.sanctions_dir.exists()                 else SanctionsScreener({})
+            intel = combiner = version = None
+            champ = settings.crypto_dir / "champion.txt"
+            if champ.exists():
+                version = champ.read_text().strip()
+                d = settings.crypto_dir / version
+                if (d / "address_intel.db").exists() and (d / "combiner.json").exists():
+                    intel, combiner = AddressIntel.open(d / "address_intel.db"), CounterpartyRisk.load(d / "combiner.json")
+            if intel is None:
+                log.warning("crypto rail running without address intelligence (no trained intel store)")
+            scorers[rail] = CryptoScorer(store, settings.rails_config_dir, screener, intel, combiner,
+                                         version if intel else None, settings.travel_rule_threshold_usd)
+            log.info("crypto rail: %d sanctioned addresses, intel=%s", len(screener), version if intel else None)
+        else:
+            raise ValueError(f"unknown rail {rail}")
+    return scorers
+
+
 def build_container(settings: Settings, store: FeatureStore | None = None, bus: EventBus | None = None,
                     provider: Provider | None = None, start_workers: bool | None = None) -> Container:
     engine = make_engine(settings.database_url)
@@ -67,11 +99,12 @@ def build_container(settings: Settings, store: FeatureStore | None = None, bus: 
         limiter = RedisTokenBucket(redis.Redis.from_url(settings.redis_url), settings.rate_limit_rps, settings.rate_limit_burst)
     else:
         limiter = TokenBucket(settings.rate_limit_rps, settings.rate_limit_burst)
+    scorers = build_scorers(settings, store, models, rules)
     explainer = Explainer(sf, models.registry)
     run_workers = settings.run_workers_in_process if start_workers is None else start_workers
     workers = WorkerPool(sf, bus, provider, explainer, settings.agent_auto_investigate) if run_workers else None
     return Container(settings, sf, store, bus, models, rules,
-                     ScoringService(FeaturePipeline(store), models, rules, sf),
+                     ScoringService(scorers, sf),
                      Authenticator(sf), limiter, provider, workers,
                      ReceiptVerifier(settings.artifacts_dir / "vision" / "thresholds.json"), explainer)
 

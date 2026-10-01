@@ -96,10 +96,10 @@ def fold_event(state: dict, ts: float, amount: float, related: dict[str, str | N
     return s
 
 
-def distinct_recent(state: dict | None, kind: str, at: float) -> float:
+def distinct_recent(state: dict | None, kind: str, at: float, window: float = DISTINCT_WINDOW) -> float:
     if not state:
         return 0.0
-    return float(sum(1 for t in state["d"].get(kind, {}).values() if at - t <= DISTINCT_WINDOW))
+    return float(sum(1 for t in state["d"].get(kind, {}).values() if at - t <= window))
 
 
 def read_features(state: dict | None, ts: float, amount: float) -> dict[str, float]:

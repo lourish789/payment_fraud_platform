@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # Vision
     receipts_dir: Path = Path("data/receipts")
 
+    # Payment rails
+    rails_enabled: list[str] = ["card", "bank_transfer", "mobile_money", "crypto"]
+    rails_config_dir: Path = Path("configs/rails")
+    travel_rule_threshold_usd: float = 1000.0  # FATF baseline; EU TFR is 0, US BSA 3000
+    sanctions_dir: Path = Path("data/raw/crypto/ofac")
+
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw"
@@ -53,6 +59,10 @@ class Settings(BaseSettings):
     @property
     def models_dir(self) -> Path:
         return self.artifacts_dir / "models"
+
+    @property
+    def crypto_dir(self) -> Path:
+        return self.models_dir / "crypto"
 
 
 @lru_cache

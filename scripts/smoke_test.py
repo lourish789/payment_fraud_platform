@@ -69,6 +69,79 @@ def receipt_png(tx: dict, kind: str) -> bytes:
     return b.getvalue()
 
 
+def real_crypto_samples() -> dict:
+    """A real OFAC-sanctioned BTC address, and real Elliptic transactions (one illicit, one licit) from the
+    test period with their input addresses."""
+    ofac = (ROOT / "data" / "raw" / "crypto" / "ofac" / "sanctioned_addresses_XBT.txt").read_text().split()
+    import pandas as pd
+
+    from payguard.crypto.data import time_of_step
+
+    risk = pd.read_parquet(sorted((ROOT / "artifacts" / "models" / "crypto").glob("crypto-lgbm-*/tx_risk.parquet"))[-1])
+    ins = pd.read_csv(ROOT / "data" / "raw" / "crypto" / "AddrTx_edgelist.csv")
+    ev = ins.merge(risk[(risk.step.between(40, 42)) & (risk.label >= 0)], on="txId")
+    illicit = ev[ev.label == 1].sort_values("risk", ascending=False).iloc[0]
+    licit = ev[ev.label == 0].sort_values("risk").iloc[0]
+    return {"sanctioned": ofac[0], "illicit": illicit, "licit": licit, "when": time_of_step}
+
+
+def rail_checks(c: httpx.Client, H: dict) -> None:
+    print("== every payment rail via POST /v1/payments/score")
+    t0 = "2026-10-01T09:00:00Z"
+    base = {"currency": "USD", "account_age_days": 400}
+    for i in range(6):  # six different senders pay one beneficiary within hours: mule fan-in
+        bt = {"rail": "bank_transfer", "transaction_id": f"smoke-bt-{i}", "event_time": f"2026-10-01T0{i}:00:00Z",
+              "amount": 1500.0, "account_id": f"victim-{i}", "beneficiary_account": "mule-001", "scheme": "NIP", **base}
+        r = c.post("/v1/payments/score", json=bt, headers=H["merchant"])
+    body = r.json()
+    check("bank_transfer: mule fan-in -> review + hold_payment", r.status_code == 200 and body["decision"] == "review"
+          and "hold_payment" in body["required_actions"], f"p={body.get('fraud_probability')}")
+    mm = {"rail": "mobile_money", "transaction_id": "smoke-mm-1", "event_time": t0, "amount": 250.0, "account_id": "wallet-1",
+          "kind": "cash_out", "counterparty_wallet": "agent-wallet", "agent_id": "agent-9", "sim_swap_days": 0.3, **base}
+    r = c.post("/v1/payments/score", json=mm, headers=H["merchant"])
+    check("mobile_money: cash-out right after SIM swap -> review", r.status_code == 200 and r.json()["decision"] == "review",
+          ", ".join(r.json()["rules_triggered"]))
+
+    s = real_crypto_samples()
+    cx = {"rail": "crypto", "currency": "BTC", "asset": "BTC", "chain": "bitcoin", "account_id": "trader-1", **base}
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": "smoke-cx-1", "event_time": t0,
+               "amount": 0.2, "amount_usd": 12000, "direction": "withdrawal", "counterparty_address": s["sanctioned"]})
+    b = r.json()
+    check("crypto: withdrawal to real OFAC-sanctioned address -> decline + block",
+          b["decision"] == "decline" and "block_withdrawal" in b["required_actions"], f"address {s['sanctioned']}")
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": "smoke-cx-2", "event_time": t0,
+               "amount": 0.2, "amount_usd": 12000, "direction": "deposit", "counterparty_address": s["sanctioned"]})
+    b = r.json()
+    check("crypto: deposit from sanctioned address -> frozen, not declined",
+          b["decision"] == "review" and {"freeze_funds", "file_sanctions_report"} <= set(b["required_actions"]))
+    for kind in ("illicit", "licit"):
+        row = s[kind]
+        when = s["when"](int(row.step)).isoformat().replace("+00:00", "Z")
+        r = c.post("/v1/payments/score", headers=H["merchant"], json={
+            **cx, "account_id": f"trader-{kind}", "transaction_id": f"smoke-cx-{kind}", "event_time": when,
+            "amount": 0.05, "amount_usd": 900, "direction": "deposit", "counterparty_address": row.input_address,
+            "tx_hash": str(int(row.txId))})
+        b = r.json()
+        cp = c.get(f"/v1/transactions/smoke-cx-{kind}", headers=H["analyst"]).json()["decision"]
+        expected_flag = kind == "illicit"
+        check(f"crypto: deposit carried by a real Elliptic {kind} tx -> {'flagged' if expected_flag else 'approved'}",
+              (b["decision"] != "approve") == expected_flag,
+              f"decision {b['decision']}, p={b['fraud_probability']}, model {cp['model_version']}")
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": "smoke-cx-3", "event_time": t0,
+               "amount": 0.1, "amount_usd": 6000, "direction": "withdrawal", "counterparty_vasp": "OtherExchange",
+               "counterparty_address": "bc1qsmoketestaddressxxxxxxxxxxxxxxxxxx"})
+    check("crypto: VASP transfer above threshold without Travel Rule data -> review",
+          "travel_rule_incomplete" in r.json()["rules_triggered"])
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={"rail": "cheque", "transaction_id": "x",
+                                                                  "event_time": t0, "amount": 1})
+    check("unknown rail -> 422", r.status_code == 422)
+    queue = c.get("/v1/cases", headers=H["analyst"], params={"limit": 200}).json()
+    rails = {c.get(f"/v1/transactions/{q['transaction_id']}", headers=H["analyst"]).json()["transaction"].get("rail", "card")
+             for q in queue}
+    check("all four rails land in the one analyst queue", {"card", "bank_transfer", "mobile_money", "crypto"} <= rails,
+          ", ".join(sorted(rails)))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8020")
@@ -194,6 +267,8 @@ def main() -> int:
     check("POST /v1/labels (50 chargebacks) -> accepted", r.status_code == 200 and r.json()["accepted"] == 50)
     r = c.get(f"/v1/transactions/{samples[1][0]['transaction_id']}", headers=H["analyst"])
     check("label visible on transaction", r.json()["label"] is not None)
+
+    rail_checks(c, H)
 
     print("== monitoring and model registry")
     r = c.get("/v1/monitoring/drift", headers=H["analyst"])

@@ -9,4 +9,7 @@ $PY -m payguard replay
 $PY -m payguard parity
 $PY -m payguard agent-eval --n 200 --provider heuristic
 $PY -m payguard drift-demo
+$PY -m payguard crypto-ingest
+$PY -m payguard crypto-train
+$PY -m payguard crypto-intel
 echo CHAIN_DONE
