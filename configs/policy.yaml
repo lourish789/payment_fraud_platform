@@ -1,0 +1,6 @@
+# Decision-policy inputs. The fitted thresholds themselves are versioned with each model
+# (artifacts/models/<version>/policy.json) because they depend on that model's calibration.
+review_capacity: 0.03          # fraction of traffic the analyst team can review (binding constraint)
+base_review_cost_usd: 5.0      # fully loaded cost of one manual review
+decline_target_precision: 0.90 # only auto-decline when >=90% of such declines are fraud (validation)
+false_decline_cost_rate: 0.10  # cost of declining a good customer, as a fraction of the amount

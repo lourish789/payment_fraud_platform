@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+artifacts/
+*.db
+*.db-journal
+.env
+*.log
+.loadtest_key
+.smoke_key_*

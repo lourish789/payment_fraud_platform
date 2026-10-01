@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 10s
+scrape_configs:
+  - job_name: payguard-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+rule_files: []
+# Suggested alerts (see docs/RUNBOOK.md):
+#   p99 score latency > 50ms for 5m:
+#     histogram_quantile(0.99, sum by (le) (rate(payguard_http_request_seconds_bucket{route="/v1/transactions/score"}[5m]))) > 0.05
+#   review rate above analyst capacity:
+#     sum(rate(payguard_decisions_total{decision="review"}[1h])) / sum(rate(payguard_decisions_total[1h])) > 0.03
+#   outbox not draining:  payguard_outbox_unpublished > 1000

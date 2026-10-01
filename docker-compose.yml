@@ -1,0 +1,62 @@
+# Production-shaped topology: API replicas and workers are separate processes sharing Postgres (system of
+# record), Redis (online feature store + Redis Streams event bus + global rate limiter) and model artifacts.
+#
+#   docker compose up -d postgres redis
+#   docker compose run --rm api payguard materialize          # offline snapshot -> Redis
+#   docker compose up -d api worker prometheus
+#
+# Expects ./artifacts (trained model) and ./data/processed (snapshot) from `payguard backfill && payguard train`.
+x-env: &env
+  PAYGUARD_DATABASE_URL: postgresql+psycopg://payguard:payguard@postgres:5432/payguard
+  PAYGUARD_REDIS_URL: redis://redis:6379/0
+  PAYGUARD_RUN_WORKERS_IN_PROCESS: "false"
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: payguard
+      POSTGRES_PASSWORD: payguard
+      POSTGRES_DB: payguard
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payguard"]
+      interval: 5s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  api:
+    build: .
+    environment: *env
+    ports: ["8000:8000"]
+    volumes: ["./artifacts:/app/artifacts:ro", "./data/processed:/app/data/processed:ro"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    deploy:
+      replicas: 1
+
+  worker:
+    build: .
+    command: ["payguard", "worker"]
+    environment: *env
+    volumes: ["./artifacts:/app/artifacts:ro"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes: ["./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+
+volumes:
+  pgdata:
+  redisdata:

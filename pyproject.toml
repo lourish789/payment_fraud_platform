@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "payguard"
+version = "0.1.0"
+description = "Real-time payment fraud scoring platform: streaming features, calibrated models, analyst agent, receipt forensics."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "pyarrow>=14",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "python-multipart>=0.0.9",
+    "pyyaml>=6",
+    "httpx>=0.27",
+    "redis>=5",
+    "prometheus-client>=0.20",
+    "pillow>=10",
+    "anthropic>=0.100",
+]
+
+[project.optional-dependencies]
+vision = ["rapidocr_onnxruntime>=1.3", "opencv-python-headless>=4.9"]
+postgres = ["psycopg[binary]>=3.1"]
+dev = ["pytest>=8", "fakeredis>=2.23"]
+
+[project.scripts]
+payguard = "payguard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["slow: runs OCR models (seconds per image)"]

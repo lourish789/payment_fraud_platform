@@ -1,0 +1,47 @@
+# Hand-written rules: the "before ML" baseline, and the guardrails that stay after ML.
+# Every condition is ANDed. Missing features never trigger a rule.
+#
+# mode: enforce  -> can escalate the model's decision (most severe wins)
+#       shadow   -> evaluated and logged on every decision (rules column, metrics), never acts
+#
+# Rule hygiene: each rule is measured on the validation month by *marginal* precision, i.e. among
+# transactions the model would have approved. A review rule whose marginal precision is below the base
+# fraud rate (~3.4%) costs more in analyst time ($5/review) than it recovers, so it runs in shadow.
+# Numbers below are from the April validation month (see model metadata -> report.rules_valid).
+rules:
+  - id: velocity_burst_bin
+    description: Many transactions on this card BIN profile within the last hour
+    action: review
+    mode: shadow  # hit rate 5.4%, marginal precision 2.1%: $21.8k of reviews to catch $9.4k
+    when:
+      - {feature: bin_cnt_1h, op: ">=", value: 5}
+
+  - id: device_farm
+    description: Device fingerprint seen with many distinct customers
+    action: review
+    mode: shadow  # hit rate 8.3%, marginal precision 2.8%: coarse fingerprints (e.g. "iOS/Safari") are shared
+    when:
+      - {feature: device_n_distinct_customer, op: ">=", value: 8}
+
+  - id: new_customer_high_amount
+    description: First-ever transaction for this customer and a high amount
+    action: review
+    mode: shadow  # marginal precision 0.0% on 132 hits
+    when:
+      - {feature: customer_is_new, op: "==", value: 1.0}
+      - {feature: amount, op: ">=", value: 1000}
+
+  - id: amount_spike
+    description: Amount far above this customer's usual spend
+    action: review
+    mode: shadow  # marginal precision 1.0%
+    when:
+      - {feature: customer_amt_z, op: ">=", value: 4.0}
+      - {feature: amount, op: ">=", value: 300}
+
+  - id: hard_amount_limit
+    description: Above the single-transaction hard limit for card-not-present
+    action: decline
+    mode: enforce  # business policy, not a statistical rule: stays regardless of precision
+    when:
+      - {feature: amount, op: ">", value: 10000}
