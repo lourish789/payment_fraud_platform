@@ -224,6 +224,52 @@ everything above the lower bar and left the review band empty. Tying each band t
 error (an analyst's time vs. a customer blocked without a human) makes the ordering structural rather
 than accidental.
 
+## ADR-16: The API serves the console from its own origin
+
+**Decision.** The React console is built to static files and served by the FastAPI process
+(`/assets/*` plus an `index.html` fallback for client-side routes). Docker builds both in one multi-stage
+image, and Node never reaches the runtime image.
+
+**Why.**
+- **One deployable.** There is no CDN/API version skew and no separate hosting to secure.
+- **No CORS.** The browser sees one origin, so the CSP can say `connect-src 'self'`. That is the control
+  that makes a bearer key in `sessionStorage` acceptable for an internal console: no third-party script
+  can run, and nothing can be sent off-origin.
+
+**When to revisit.** At high console traffic, or when a CDN's edge caching matters. The build is plain
+static files, so moving it to a CDN is a deployment change only. CORS is already a setting.
+
+## ADR-17: Read models and one error contract for the console
+
+**Decision.**
+- Routers are thin, one per resource. Queries live in `services/queries.py` and dashboard aggregates in
+  `services/admin.py`.
+- Every route declares a response model (`api/dto.py`), mirrored by `frontend/src/api/types.ts`.
+- Lists are `{items, total, limit, offset}`.
+- Every error is `{"error": {"code", "message", "request_id"}}`.
+
+**Why.** A UI is the API's most demanding client. It needs filters, pages, totals and errors it can show
+to a person and trace to a log line. Before this change the API returned bare lists, two error shapes
+(`detail` from FastAPI and `error` from the middleware), and untyped dicts.
+
+**Cost.** This was a breaking change to `GET /v1/cases`, which went from a list to a page, and to error
+bodies. It was acceptable pre-release; after release it would need a `/v2` or a deprecation window.
+
+## ADR-18: Admin aggregates in SQL, over covering indexes
+
+**Decision.**
+- The overview is a handful of GROUP BY queries, one of which covers traffic, decisions, rails, labels and
+  the confusion matrix in a single scan.
+- Covering indexes make those scans index-only.
+- Percentiles and rule hits use the most recent 20k rows.
+
+**Why.** Computing in Python over all rows works at 10k and fails at 10M. Separate count queries over wide
+JSON rows took 7.4 s on 89k transactions; the grouped, index-only version takes 0.6 s.
+
+**When to revisit.** At tens of millions of rows, maintain hourly rollups. Either update them
+asynchronously from the `decision.made` stream, or use a materialised view in Postgres. Don't update them
+on the scoring path, where one row per hour and rail would become a lock hotspot.
+
 ## What I would do next
 
 - Replace the dev-mode SQLite with Postgres everywhere (compose already does) and add Alembic migrations.
@@ -233,5 +279,7 @@ than accidental.
 - A small labelled set of real receipts (with consent) to replace the synthetic vision evaluation.
 - Crypto: multi-hop, value-weighted taint tracing; entity resolution for account-based chains (deposit
   address reuse, contract interactions); cross-chain bridge tracing.
+- Console: OIDC SSO with short-lived HttpOnly sessions instead of API keys in browser storage; per-user
+  identities in the audit log.
 - Replace the bank-transfer and mobile-money scorecards with trained models once resolutions and
   scheme reimbursement claims provide labels.

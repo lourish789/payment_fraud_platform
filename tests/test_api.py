@@ -122,7 +122,7 @@ def test_flag_creates_case_outbox_and_agent_investigation(env):
     with c.session_factory() as s:
         assert s.scalar(select(func.count()).select_from(OutboxEvent).where(OutboxEvent.published_at.is_(None))) == 0
 
-    queue = client.get("/v1/cases", headers=h["analyst"]).json()
+    queue = client.get("/v1/cases", headers=h["analyst"]).json()["items"]
     assert queue[0]["priority"] >= queue[-1]["priority"]
 
     # analyst resolution records the label; a conflicting second resolution is rejected

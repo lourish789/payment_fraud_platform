@@ -135,7 +135,7 @@ def rail_checks(c: httpx.Client, H: dict) -> None:
     r = c.post("/v1/payments/score", headers=H["merchant"], json={"rail": "cheque", "transaction_id": "x",
                                                                   "event_time": t0, "amount": 1})
     check("unknown rail -> 422", r.status_code == 422)
-    queue = c.get("/v1/cases", headers=H["analyst"], params={"limit": 200}).json()
+    queue = c.get("/v1/cases", headers=H["analyst"], params={"limit": 200}).json()["items"]
     rails = {c.get(f"/v1/transactions/{q['transaction_id']}", headers=H["analyst"]).json()["transaction"].get("rail", "card")
              for q in queue}
     check("all four rails land in the one analyst queue", {"card", "bank_transfer", "mobile_money", "crypto"} <= rails,
@@ -209,7 +209,7 @@ def main() -> int:
 
     print("== cases and explanations")
     r = c.get("/v1/cases", headers=H["analyst"], params={"limit": 200})
-    queue = r.json()
+    queue = r.json()["items"]
     pri = [q["priority"] for q in queue]
     check("GET /v1/cases -> queue ordered by expected loss", r.status_code == 200 and queue and pri == sorted(pri, reverse=True),
           f"{len(queue)} open cases")
@@ -249,8 +249,9 @@ def main() -> int:
           f"{inv['provider']} recommends {inv['recommendation']} ({inv['confidence']}); tools: {', '.join(tools_used)}")
     check("agent read the attached receipt verdicts", "get_receipt_verification" in tools_used)
     r = c.get("/v1/cases", headers=H["analyst"], params={"limit": 200})
-    auto = [q for q in r.json() if q["agent"] and q["agent"]["status"] == "done"]
-    check("cases auto-investigated via outbox -> bus -> worker", len(auto) > 0, f"{len(auto)} of {len(r.json())} open cases")
+    open_cases = r.json()["items"]
+    auto = [q for q in open_cases if q["agent"] and q["agent"]["status"] == "done"]
+    check("cases auto-investigated via outbox -> bus -> worker", len(auto) > 0, f"{len(auto)} of {len(open_cases)} open cases")
 
     print("== feedback loop")
     truth = scored[case["transaction_id"]][1]

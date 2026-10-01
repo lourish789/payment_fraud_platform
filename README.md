@@ -22,6 +22,11 @@ the **OFAC SDN sanctioned-address list**.
 - **Receipt verification (computer vision).** Checks proof-of-payment screenshots: OCR, then reconciliation
   against the ledger, then image forensics.
 - **Operations.** Drift monitoring, Prometheus metrics, degraded mode when the feature store is down, a runbook.
+- **Web console and admin dashboard** ([docs/FRONTEND.md](docs/FRONTEND.md)). A React + TypeScript single-page
+  app served by the API itself: an analyst workspace (case queue, explanations, agent reports, resolution),
+  a merchant scoring console, and an admin dashboard that reflects the whole system (traffic and decisions
+  per rail, the queue, live precision from labels, the agent, the event pipeline, models, rules, API keys,
+  audit log, component health). Role-aware: each key sees only what its API calls are allowed to serve.
 
 ## Results
 
@@ -90,7 +95,7 @@ flowchart LR
     PG --> RELAY[Outbox relay] --> BUS[[Event bus<br/>Redis Streams]]
     BUS -->|case.created| WK[Investigation worker]
     WK --> AG[Agent: Claude or heuristic] -->|read-only, point-in-time tools| PG
-    A[Analyst] -->|queue, reports, resolve| API2[Case API] --> PG
+    A[Analyst / admin] -->|browser| UI[Web console<br/>React SPA, same origin] -->|queue, reports, resolve, admin| API2[Case + admin API] --> PG
     A -->|receipt screenshot| CV[Receipt verifier<br/>OCR + ledger + ELA] --> PG
     PG -->|labels| TRAIN[Offline training]
     LOG[(Event log)] --> BF[Backfill: SAME feature code] --> TRAIN --> REG[(Model registry<br/>champion / challenger)] --> MOD
@@ -134,8 +139,13 @@ payguard crypto-intel  # address/entity intelligence store + counterparty-risk c
 
 payguard create-client --name shop --role merchant    # prints an API key (shown once)
 payguard create-client --name ops  --role analyst
-payguard serve                                         # http://127.0.0.1:8000/docs
+payguard create-client --name me   --role admin
+cd frontend && npm ci && npm run build && cd ..        # web console -> frontend/dist
+payguard serve                                         # console at http://127.0.0.1:8000, API docs at /docs
 ```
+
+Console development with hot reload: `cd frontend && npm run dev` (port 5173, proxies `/v1` to the API on
+8000). One-command deploy: `docker build -t payguard .` builds the console and the API into one image.
 
 ```bash
 curl -s localhost:8000/v1/transactions/score -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{
@@ -157,7 +167,8 @@ payguard vision-eval
 payguard drift-demo
 payguard loadtest --key $KEY --n 2000 --concurrency 4 --label "API only"   # against a running `payguard serve`
 python -m payguard.report  # regenerates docs/EVALUATION.md from artifacts/
-pytest                     # 41 tests (-m "not slow" skips the OCR test)
+pytest                     # 50 tests (-m "not slow" skips the OCR test)
+cd frontend && npm test && npm run typecheck   # console unit tests + strict TypeScript
 ```
 
 `run_all.sh` runs backfill, train, replay, parity, the agent eval and the drift drill in one go (about 40
@@ -178,20 +189,35 @@ Full stack (Postgres, Redis and separate worker processes): `docker compose up` 
 
 ## API
 
+Every route is versioned under `/v1`, declares a typed response model (complete OpenAPI at `/docs`), is
+role-gated, and returns errors in one envelope: `{"error": {"code", "message", "request_id", "details?"}}`,
+where `request_id` matches the `x-request-id` header and the logs. Lists are paginated
+(`{items, total, limit, offset}`) and filterable.
+
 | Method | Path | Role | Purpose |
 |---|---|---|---|
+| GET | `/v1/auth/me` | any | Identity, role and permissions of the calling key (the console's login) |
 | POST | `/v1/payments/score` | merchant | Any rail (`rail`: card, bank_transfer, mobile_money, crypto): decision, risk, reasons, `required_actions` (idempotent) |
 | POST | `/v1/transactions/score` | merchant | Card-only endpoint (same pipeline), kept for compatibility |
-| GET | `/v1/transactions/{id}` | analyst | Payload, decision, shadow score, label |
-| GET | `/v1/cases` | analyst | Queue ordered by expected loss, with the agent's recommendation |
-| GET | `/v1/cases/{id}` | analyst | Case, model explanation, investigations, receipts |
-| POST | `/v1/cases/{id}/resolve` | analyst | Analyst decision; records the label |
-| POST | `/v1/cases/{id}/investigate` | analyst | (Re)run the investigation agent |
-| GET | `/v1/investigations/{id}?include_trace=true` | analyst | Report and full tool trace |
-| POST | `/v1/labels` | analyst | Bulk delayed labels (chargeback feed) |
-| POST | `/v1/receipts/verify` | merchant | Proof-of-payment screenshot verification |
+| GET | `/v1/transactions` | analyst | Paginated; filter by rail, decision, label, id prefix, time, amount, client |
+| GET | `/v1/transactions/{id}` | analyst | Payload, decision, shadow score, label, case |
+| GET | `/v1/cases` | analyst | Queue ordered by expected loss; filter by status, rail, decision, resolution |
+| GET | `/v1/cases/{id}` | analyst | Case, payload, decision, explanation, investigations, receipts |
+| POST | `/v1/cases/{id}/resolve` | analyst | Analyst decision; records the label; audited |
+| POST | `/v1/cases/{id}/investigate` | analyst | Run the agent on the interactive lane (outbox event `investigation.requested`) |
+| GET | `/v1/investigations`, `/v1/investigations/{id}?include_trace=true` | analyst | Reports, and the full tool trace |
+| GET / POST | `/v1/labels` | analyst | List labels / bulk delayed labels (chargeback feed) |
+| POST | `/v1/receipts/verify` | merchant, analyst | Proof-of-payment screenshot verification (optionally attached to a case) |
+| GET | `/v1/receipts`, `/v1/receipts/{id}` | analyst | Verified receipts and full results |
 | GET | `/v1/monitoring/drift` | analyst | PSI drift report |
-| GET / POST | `/v1/models`, `/v1/models/promote` | admin | Registry, champion/challenger promotion (hot swap) |
+| GET | `/v1/models`, `/v1/models/{version}` | admin | Registry and a version's training metadata and evaluation |
+| POST | `/v1/models/promote` | admin | Champion/challenger promotion (hot swap); audited |
+| GET | `/v1/admin/overview` | admin | Whole-system KPIs for a time window (`window`, `anchor`, `from`/`to`) |
+| GET | `/v1/admin/timeseries` | admin | Decisions and amounts per hour/day, overall and per rail |
+| GET | `/v1/admin/rails`, `/v1/admin/rules` | admin | Rail configuration and traffic; every rule with mode and hit counts |
+| GET | `/v1/admin/events` | admin | Outbox backlog per topic and recent events |
+| GET / POST | `/v1/admin/clients`, `/v1/admin/clients/{id}/revoke` | admin | API keys: list, issue (shown once), revoke (immediate); audited |
+| GET | `/v1/admin/audit`, `/v1/admin/system` | admin | Audit log; components, health and non-secret settings |
 | GET | `/healthz`, `/readyz`, `/metrics` | - | Liveness, readiness (DB, store, model), Prometheus |
 
 ## Repository layout
@@ -201,22 +227,29 @@ src/payguard/
   data/        ingest (download + verify), adapter (IEEE row -> canonical schema), out-of-time splits
   features/    decayed-aggregate state, online stores (memory / Redis), card pipeline, rail entities, backfill
   models/      encoder, training + evaluation, calibration, expected-loss policy, registry
-  services/    scoring service (shared request path), per-rail scorers, async TreeSHAP explanations
-  api/         FastAPI app, routes, auth + rate limiting
+  services/    scoring service (shared request path), per-rail scorers, async TreeSHAP explanations,
+               queries.py (read models), admin.py (dashboard aggregates), audit.py
+  api/         FastAPI app factory, routers/ (one per resource), dto.py (response models), errors.py
+               (error envelope), deps.py (auth, roles, pagination), security.py (keys + rate limiting)
   agent/       investigation tools (rail-aware), Claude + heuristic providers, evaluation harness
   crypto/      Elliptic++ ingest, transaction risk model, OFAC screening, entity clustering, address intelligence
   vision/      receipt rendering/forgery (evaluation), OCR + ledger + ELA verifier, evaluation
   events.py    outbox + event bus        workers.py   relay + investigation consumer
   rules.py     declarative rules          monitoring.py  PSI drift
   simulate.py  replay, parity, load test, drift drill
+frontend/      web console: React + TypeScript + Vite (src/api typed client, src/features one folder per page)
 scripts/       smoke_test.py: end-to-end check of every endpoint with real sample transactions
 configs/       rules.yaml, policy.yaml, prometheus.yml, rails/{bank_transfer,mobile_money,crypto}.yaml
-docs/          DECISIONS.md, EVALUATION.md (generated), RUNBOOK.md
-tests/         41 tests: feature math + stationarity, store parity, API contracts, concurrency, agent loop + safety,
+docs/          DECISIONS.md, EVALUATION.md (generated), RUNBOOK.md, PAYMENT_RAILS.md, FRONTEND.md
+tests/         50 tests: admin API + error envelope + console serving, feature math + stationarity, store parity, API contracts, concurrency, agent loop + safety,
                vision, every payment rail (sanctions, mule fan-in, SIM swap, pass-through, Travel Rule)
 ```
 
 ## Honest limitations
+
+- **The console signs in with API keys, not SSO.** Keys live in `sessionStorage` under a strict CSP; a
+  production deployment for a bank would put OIDC SSO with short-lived sessions in front (see
+  [docs/FRONTEND.md](docs/FRONTEND.md)).
 
 - **The non-card rails have no labelled training data.** Bank transfer and mobile money run transparent
   scorecards whose points are research-based priors (in YAML, each with its reason). They are not fitted

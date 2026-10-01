@@ -33,9 +33,12 @@ class WorkerPool:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self.executor = ThreadPoolExecutor(max_workers=agent_concurrency, thread_name_prefix="agent")
+        # Analyst-requested runs get their own lane so they never wait behind an auto-investigation backlog.
+        self.interactive = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-interactive")
 
-    def submit_investigation(self, inv_id: str) -> None:
-        self.executor.submit(run_investigation, self.sf, self.provider, inv_id, self.explainer)
+    def submit_investigation(self, inv_id: str, interactive: bool = False) -> None:
+        pool = self.interactive if interactive else self.executor
+        pool.submit(run_investigation, self.sf, self.provider, inv_id, self.explainer)
 
     def _relay_loop(self):
         while not self._stop.is_set():
@@ -65,8 +68,20 @@ class WorkerPool:
                 log.exception("case consumer failed; retrying")
                 self._stop.wait(1.0)
 
+    def _on_investigation_requested(self, key: str, payload: dict) -> None:
+        self.submit_investigation(payload["investigation_id"], interactive=True)  # runs once: claim is atomic
+
+    def _requests_loop(self):
+        while not self._stop.is_set():
+            try:
+                self.bus.poll("investigation.requested", "investigator", self.consumer,
+                              self._on_investigation_requested, block_ms=500)
+            except Exception:
+                log.exception("investigation request consumer failed; retrying")
+                self._stop.wait(1.0)
+
     def start(self) -> None:
-        for target in (self._relay_loop, self._consume_loop):
+        for target in (self._relay_loop, self._consume_loop, self._requests_loop):
             t = threading.Thread(target=target, daemon=True, name=target.__name__)
             t.start()
             self._threads.append(t)
@@ -76,3 +91,4 @@ class WorkerPool:
         for t in self._threads:
             t.join(timeout=5)
         self.executor.shutdown(wait=False, cancel_futures=True)
+        self.interactive.shutdown(wait=False, cancel_futures=True)

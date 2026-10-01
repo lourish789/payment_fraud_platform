@@ -25,12 +25,16 @@ def hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+def new_key() -> str:
+    return "pg_" + secrets.token_urlsafe(32)
+
+
 def create_client(session_factory: sessionmaker, name: str, role: str) -> tuple[str, str]:
     if role not in ROLES:
         raise ValueError(f"role must be one of {sorted(ROLES)}")
-    key = "pg_" + secrets.token_urlsafe(32)
+    key = new_key()
     with session_factory() as s, s.begin():
-        c = ApiClient(name=name, key_hash=hash_key(key), role=role)
+        c = ApiClient(name=name, key_hash=hash_key(key), role=role, key_prefix=key[:10])
         s.add(c)
         s.flush()
         return c.id, key
@@ -67,6 +71,12 @@ class Authenticator:
         with self._lock:
             self._cache[h] = (now, p)
         return p
+
+    def invalidate(self) -> None:
+        """Drop cached lookups so a revoked key stops working on this replica immediately (other replicas
+        within the cache TTL)."""
+        with self._lock:
+            self._cache.clear()
 
 
 class TokenBucket:

@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # Vision
     receipts_dir: Path = Path("data/receipts")
 
+    # Web console. The API serves the built SPA from frontend_dist when it exists (same origin, no CORS);
+    # cors_origins is only for running the console from a different origin (e.g. the Vite dev server).
+    frontend_dist: Path = Path("frontend/dist")
+    cors_origins: list[str] = []
+
     # Payment rails
     rails_enabled: list[str] = ["card", "bank_transfer", "mobile_money", "crypto"]
     rails_config_dir: Path = Path("configs/rails")

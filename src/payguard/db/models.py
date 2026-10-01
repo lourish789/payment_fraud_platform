@@ -41,7 +41,9 @@ class ApiClient(Base):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     role: Mapped[str] = mapped_column(String(20))  # merchant | analyst | admin
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    key_prefix: Mapped[str | None] = mapped_column(String(12), nullable=True)  # shown in the console, not secret
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Transaction(Base):
@@ -58,6 +60,10 @@ class Transaction(Base):
     device_key: Mapped[str | None] = mapped_column(String(32), index=True)
     counterparty_key: Mapped[str | None] = mapped_column(String(32), index=True)  # payee / wallet / address
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # Covering index for time-windowed dashboard aggregates: the rows themselves are wide (JSON payload),
+    # so scanning them for counts is ~4x slower than an index-only scan.
+    __table_args__ = (Index("ix_transactions_dashboard", "event_time", "id", "rail", "amount"),)
 
 
 class DecisionRecord(Base):
@@ -77,6 +83,8 @@ class DecisionRecord(Base):
     shadow: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    __table_args__ = (Index("ix_decisions_dashboard", "transaction_id", "decision", "fraud_probability", "latency_ms"),)
 
 
 class Case(Base):
@@ -144,3 +152,16 @@ class OutboxEvent(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (Index("ix_outbox_unpublished", "published_at", "id"),)
+
+
+class AuditLog(Base):
+    """Append-only record of state-changing operator actions (who did what to which resource, when).
+    Scoring is not audited here: every decision already has its own immutable DecisionRecord."""
+    __tablename__ = "audit_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_id: Mapped[str] = mapped_column(String(40), index=True)
+    actor_name: Mapped[str] = mapped_column(String(100))
+    action: Mapped[str] = mapped_column(String(40), index=True)  # e.g. case.resolve, client.create
+    resource: Mapped[str] = mapped_column(String(80))
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

@@ -8,11 +8,17 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from payguard import __version__
 from payguard import observability as obs
+from payguard.api import errors
 from payguard.agent.runner import Provider, make_provider
 from payguard.api.security import Authenticator, RedisTokenBucket, TokenBucket
 from payguard.config import Settings, get_settings
@@ -122,25 +128,83 @@ def create_app(container: Container | None = None) -> FastAPI:
         if c.workers:
             c.workers.stop()
 
-    app = FastAPI(title="PayGuard", version="0.1.0", lifespan=lifespan,
-                  description="Real-time payment fraud scoring, case management, investigation agent and receipt verification.")
+    settings = container.settings if container else get_settings()
+    app = FastAPI(title="PayGuard", version=__version__, lifespan=lifespan, openapi_tags=OPENAPI_TAGS,
+                  description="Real-time multi-rail payment fraud scoring, case management, investigation agent, "
+                              "receipt verification and an admin API. Errors always use the envelope "
+                              "`{\"error\": {\"code\", \"message\", \"request_id\"}}`.")
+    errors.install(app)
+    if settings.cors_origins:
+        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
+                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
+                           expose_headers=["X-Request-Id", "Retry-After"])
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+        request.state.request_id = rid
         t0 = time.perf_counter()
         try:
             response = await call_next(request)
         except Exception:
             log.exception("unhandled error rid=%s", rid)
-            response = JSONResponse({"error": {"code": "internal", "message": "internal error", "request_id": rid}}, 500)
+            response = JSONResponse(errors.error_body(request, "internal", "internal error"), 500)
         route = request.scope.get("route")
         obs.HTTP_LATENCY.labels(getattr(route, "path", "unmatched"), request.method, response.status_code).observe(
             time.perf_counter() - t0)
         response.headers["x-request-id"] = rid
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
-    from payguard.api.routes import router
+    from payguard.api.routers import ROOT, V1
 
-    app.include_router(router)
+    for r in V1:
+        app.include_router(r, prefix="/v1")
+    for r in ROOT:
+        app.include_router(r)
+    mount_console(app, settings.frontend_dist)
     return app
+
+
+# The console talks only to this origin; inline styles are allowed for the chart library's SVG.
+CONSOLE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+               "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+API_PREFIXES = ("v1/", "docs", "redoc", "openapi.json", "healthz", "readyz", "metrics")
+
+
+def mount_console(app: FastAPI, dist: Path) -> None:
+    """Serve the built web console (frontend/dist) from the API's origin: one deployable, no CORS, and the
+    API key never leaves the origin. Client-side routes fall back to index.html; unknown API paths still
+    get a JSON 404."""
+    index = dist / "index.html"
+    if not index.exists():
+        log.info("web console not built (%s missing); serving the API only", index)
+        return
+    if (dist / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def console(path: str, request: Request):
+        if path.startswith(API_PREFIXES):
+            raise errors.ApiError(404, "not_found", "no such endpoint")
+        f = (dist / path).resolve()
+        if path and f.is_file() and dist.resolve() in f.parents:
+            return FileResponse(f)
+        return FileResponse(index, headers={"Content-Security-Policy": CONSOLE_CSP, "Cache-Control": "no-cache",
+                                            "X-Frame-Options": "DENY"})
+
+
+OPENAPI_TAGS = [
+    {"name": "auth", "description": "Identity and capabilities of the calling API key."},
+    {"name": "scoring", "description": "Synchronous, idempotent decisioning for every payment rail (merchant)."},
+    {"name": "transactions", "description": "Scored payments and their decisions (analyst)."},
+    {"name": "cases", "description": "Analyst queue ordered by expected loss; resolutions become labels."},
+    {"name": "agent", "description": "Investigation agent: queue runs and read grounded reports."},
+    {"name": "labels", "description": "Delayed ground truth (chargebacks, analyst outcomes)."},
+    {"name": "vision", "description": "Proof-of-payment receipt verification."},
+    {"name": "monitoring", "description": "Feature and score drift (PSI)."},
+    {"name": "models", "description": "Model registry and hot-swap promotion (admin)."},
+    {"name": "admin", "description": "Admin dashboard: analytics, rails, rules, events, API clients, audit, system."},
+    {"name": "ops", "description": "Health, readiness and Prometheus metrics."},
+]

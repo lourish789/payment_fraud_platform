@@ -13,27 +13,36 @@ from payguard.agent.runner import Provider
 from payguard.agent.tools import InvestigationTools
 from payguard.db.models import Investigation, clean_json
 from payguard.db.session import write_guard
+from payguard.events import enqueue
 
 log = logging.getLogger(__name__)
 
 
-def enqueue_investigation(session_factory: sessionmaker, case_id: str) -> str:
-    """Idempotent per case: an unfinished investigation is reused rather than duplicated."""
+def enqueue_investigation(session_factory: sessionmaker, case_id: str, requested_by: str | None = None) -> str:
+    """Idempotent per case: an unfinished investigation is reused rather than duplicated.
+
+    An analyst's request (requested_by set) also emits `investigation.requested` through the outbox in
+    the same transaction, so a worker in another process runs it on its interactive lane."""
     with write_guard(session_factory), session_factory() as s, s.begin():
-        existing = s.scalar(select(Investigation.id).where(Investigation.case_id == case_id,
-                                                            Investigation.status.in_(("queued", "running"))))
-        if existing:
-            return existing
-        inv = Investigation(case_id=case_id)
-        s.add(inv)
-        s.flush()
-        return inv.id
+        inv_id = s.scalar(select(Investigation.id).where(Investigation.case_id == case_id,
+                                                          Investigation.status.in_(("queued", "running"))))
+        if inv_id is None:
+            inv = Investigation(case_id=case_id)
+            s.add(inv)
+            s.flush()
+            inv_id = inv.id
+        if requested_by:
+            enqueue(s, "investigation.requested", inv_id,
+                    {"investigation_id": inv_id, "case_id": case_id, "requested_by": requested_by})
+        return inv_id
 
 
 def run_investigation(session_factory: sessionmaker, provider: Provider, inv_id: str, explainer=None) -> Investigation:
     with write_guard(session_factory), session_factory() as s, s.begin():
         inv = s.get(Investigation, inv_id)
-        if inv is None or inv.status in ("done", "failed"):
+        # Claim only a queued investigation: the same id can be submitted twice (auto-investigation on
+        # case creation, then an analyst's request for the same case), and must run once.
+        if inv is None or inv.status != "queued":
             return inv
         inv.status, inv.provider = "running", provider.name
         case_id = inv.case_id

@@ -4,6 +4,7 @@ Topics:
   decision.made   every scored transaction  -> monitoring / analytics sinks
   case.created    review/decline outcomes   -> investigation worker (agent)
   label.recorded  analyst / chargeback labels -> retraining dataset sink
+  investigation.requested  analyst asked for an agent run -> worker interactive lane
 
 Redis Streams was chosen over Kafka for this scale: consumer groups give at-least-once delivery,
 per-group offsets, and pending-entry reclaim for crashed consumers, with one piece of infra that is

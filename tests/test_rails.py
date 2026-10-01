@@ -138,7 +138,7 @@ def test_all_rails_share_one_queue_and_agent_reads_rail_signals(env):
         r2 = client.post("/v1/payments/score", headers=hm,
                          json=momo(9, kind="cash_out", sim_swap_days=0.1, amount=500.0).model_dump(mode="json"))
         assert r2.json()["decision"] == "review"
-        queue = client.get("/v1/cases", headers=h).json()
+        queue = client.get("/v1/cases", headers=h).json()["items"]
         assert {q["transaction_id"] for q in queue} >= {"cx8", "mm9"}
         case = next(q for q in queue if q["transaction_id"] == "cx8")
         detail = client.get(f"/v1/cases/{case['case_id']}", headers=h).json()
@@ -164,4 +164,4 @@ def test_idempotency_and_disabled_rail(env, tmp_path):
     with TestClient(create_app(card_only)) as client:
         r = client.post("/v1/payments/score", json=crypto(11).model_dump(mode="json"),
                         headers={"Authorization": f"Bearer {key}"})
-        assert r.status_code == 400 and r.json()["detail"]["code"] == "rail_not_enabled"
+        assert r.status_code == 400 and r.json()["error"]["code"] == "rail_not_enabled"

@@ -26,7 +26,30 @@ def make_engine(url: str) -> Engine:
     return create_engine(url, pool_size=20, max_overflow=20, pool_pre_ping=True)
 
 
-_sqlite_write_locks: dict[int, threading.Lock] = {}
+class FairLock:
+    """FIFO mutex. threading.Lock makes no ordering promise, so background loops that release and
+    immediately re-acquire it (outbox relay, agent workers) can starve a request thread indefinitely;
+    measured: an analyst's request waited >60 s while the relay drained a 93k-event backlog. Tickets
+    bound a request's wait to the writers already queued ahead of it."""
+
+    def __init__(self):
+        self._cv = threading.Condition(threading.Lock())
+        self._next = self._serving = 0
+
+    def __enter__(self):
+        with self._cv:
+            ticket = self._next
+            self._next += 1
+            while ticket != self._serving:
+                self._cv.wait()
+
+    def __exit__(self, *exc):
+        with self._cv:
+            self._serving += 1
+            self._cv.notify_all()
+
+
+_sqlite_write_locks: dict[int, FairLock] = {}
 
 
 def write_guard(session_factory: sessionmaker):
@@ -39,7 +62,7 @@ def write_guard(session_factory: sessionmaker):
     engine = session_factory.kw["bind"]
     if engine.dialect.name != "sqlite":
         return contextlib.nullcontext()
-    return _sqlite_write_locks.setdefault(id(engine), threading.Lock())
+    return _sqlite_write_locks.setdefault(id(engine), FairLock())
 
 
 def make_session_factory(engine: Engine) -> sessionmaker:
@@ -51,6 +74,8 @@ _ADDED_COLUMNS = [
     ("transactions", "rail", "VARCHAR(20) DEFAULT 'card'"),
     ("transactions", "counterparty_key", "VARCHAR(32)"),
     ("decisions", "actions", "JSON"),
+    ("api_clients", "key_prefix", "VARCHAR(12)"),
+    ("api_clients", "revoked_at", "TIMESTAMP"),
 ]
 
 
@@ -63,3 +88,10 @@ def init_db(engine: Engine) -> None:
         for table, column, ddl in _ADDED_COLUMNS:
             if column not in {c["name"] for c in insp.get_columns(table)}:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        for table in Base.metadata.sorted_tables:  # indexes added after a table was first created
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)
+        if engine.dialect.name == "sqlite":
+            # Without statistics SQLite picks the unique index over the covering one for joins.
+            analyzed = conn.execute(text("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'")).first()
+            conn.execute(text("PRAGMA optimize" if analyzed else "ANALYZE"))
