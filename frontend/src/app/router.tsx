@@ -5,6 +5,7 @@ import { LoginPage } from "@/auth/LoginPage";
 import { RequirePermission } from "@/auth/RequirePermission";
 import { AppShell } from "@/components/layout/AppShell";
 import { Spinner } from "@/components/ui";
+import { useT } from "@/i18n";
 
 // Pages are code-split per feature: an analyst never downloads the admin dashboard's charts.
 const page = <T extends Record<string, any>>(load: () => Promise<T>, name: keyof T) =>
@@ -42,7 +43,8 @@ function Home() {
 }
 
 function NotFound() {
-  return <div className="card"><div className="empty"><h2>Page not found</h2><p><a href="/">Go home</a></p></div></div>;
+  const t = useT();
+  return <div className="card"><div className="empty"><h2>{t("Page not found")}</h2><p><a href="/">{t("Go home")}</a></p></div></div>;
 }
 
 export const router = createBrowserRouter([

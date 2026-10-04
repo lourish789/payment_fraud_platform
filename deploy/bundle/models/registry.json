@@ -1,0 +1,13 @@
+{
+  "champion": "lgbm-20260930-131236",
+  "challenger": null,
+  "history": [
+    {
+      "alias": "champion",
+      "from": null,
+      "to": "lgbm-20260930-131236",
+      "reason": "first model",
+      "at": "2026-09-30T13:12:36.362497+00:00"
+    }
+  ]
+}

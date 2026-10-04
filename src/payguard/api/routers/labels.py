@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 from payguard.api.deps import PageParams, container, page_params, require
 from payguard.api.dto import Accepted, Page
 from payguard.api.errors import ApiError
-from payguard.db.models import Label
+from sqlalchemy import select
+
+from payguard.db.models import Label, Transaction
 from payguard.db.session import write_guard
 from payguard.events import enqueue
 from payguard.services import queries
@@ -41,12 +43,21 @@ def list_labels(request: Request, page: PageParams = Depends(page_params),
 
 @router.post("", response_model=Accepted)
 def post_labels(request: Request, labels: list[LabelIn] = Body(...), _=Depends(require("analyst"))):
-    """Upsert a batch of labels (max 5000). Each emits a label.recorded event."""
+    """Upsert a batch of labels (max 5000). Each emits a label.recorded event. Labels for transactions we have
+    no record of are not stored (they could never join a decision, and would inflate label counts); their ids
+    come back in `unknown` so the feed can be reconciled."""
     if len(labels) > MAX_BATCH:
         raise ApiError(413, "too_large", f"max {MAX_BATCH} labels per request")
     sf = container(request).session_factory
+    ids = list({lab.transaction_id for lab in labels})
+    with sf() as s:
+        known = set()
+        for i in range(0, len(ids), 500):
+            known |= set(s.scalars(select(Transaction.id).where(Transaction.id.in_(ids[i:i + 500]))).all())
+    unknown = sorted({lab.transaction_id for lab in labels} - known)
+    accepted = [lab for lab in labels if lab.transaction_id in known]
     with write_guard(sf), sf() as s, s.begin():
-        for lab in labels:
+        for lab in accepted:
             s.merge(Label(transaction_id=lab.transaction_id, is_fraud=lab.is_fraud, source=lab.source))
             enqueue(s, "label.recorded", lab.transaction_id, lab.model_dump())
-    return Accepted(accepted=len(labels))
+    return Accepted(accepted=len(accepted), unknown=unknown[:100], unknown_count=len(unknown))

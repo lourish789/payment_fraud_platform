@@ -61,10 +61,18 @@ def list_transactions(sf: sessionmaker, limit: int, offset: int, rail: str | Non
     with sf() as s:
         rows, total = _page(s, stmt, limit, offset)
     return [{"transaction_id": tx.id, "rail": tx.rail or "card", "amount": tx.amount,
-             "currency": (tx.payload or {}).get("currency"), "event_time": tx.event_time,
+             "currency": tx.currency or (tx.payload or {}).get("currency") or "USD",
+             "amount_local": tx.amount_local if tx.amount_local is not None else tx.amount, "event_time": tx.event_time,
              "decision": d.decision if d else None, "fraud_probability": d.fraud_probability if d else None,
              "model_version": d.model_version if d else None, "case_id": case_id, "label": is_fraud,
              "created_at": tx.created_at} for tx, d, case_id, is_fraud in rows], total
+
+
+def money_dict(tx: Transaction) -> dict:
+    p = tx.payload or {}
+    return {"currency": tx.currency or p.get("currency") or "USD",
+            "amount": tx.amount_local if tx.amount_local is not None else p.get("amount", tx.amount),
+            "amount_usd": tx.amount}
 
 
 def get_transaction(sf: sessionmaker, transaction_id: str) -> dict | None:
@@ -75,7 +83,7 @@ def get_transaction(sf: sessionmaker, transaction_id: str) -> dict | None:
         dec = s.scalar(select(DecisionRecord).where(DecisionRecord.transaction_id == transaction_id))
         label = s.get(Label, transaction_id)
         case_id = s.scalar(select(Case.id).where(Case.transaction_id == transaction_id))
-        return {"transaction_id": tx.id, "rail": tx.rail or "card", "transaction": tx.payload,
+        return {"transaction_id": tx.id, "rail": tx.rail or "card", "money": money_dict(tx), "transaction": tx.payload,
                 "decision": decision_dict(dec), "case_id": case_id,
                 "label": None if label is None else {"is_fraud": label.is_fraud, "source": label.source,
                                                      "created_at": label.created_at}}
@@ -93,7 +101,8 @@ def _latest_investigations(s: Session, case_ids: list[str]) -> dict[str, Investi
 
 def list_cases(sf: sessionmaker, limit: int, offset: int, status: str = "open", rail: str | None = None,
                decision: str | None = None, resolution: str | None = None) -> tuple[list[dict], int]:
-    stmt = select(Case, Transaction.amount, Transaction.rail).join(Transaction, Transaction.id == Case.transaction_id)
+    stmt = (select(Case, Transaction.amount, Transaction.rail, Transaction.currency, Transaction.amount_local)
+            .join(Transaction, Transaction.id == Case.transaction_id))
     if status != "all":
         stmt = stmt.where(Case.status == status)
     if rail:
@@ -105,14 +114,15 @@ def list_cases(sf: sessionmaker, limit: int, offset: int, status: str = "open", 
     stmt = stmt.order_by(Case.priority.desc(), Case.id)
     with sf() as s:
         rows, total = _page(s, stmt, limit, offset)
-        latest = _latest_investigations(s, [c.id for c, _, _ in rows])
+        latest = _latest_investigations(s, [c.id for c, *_ in rows])
     return [{"case_id": c.id, "transaction_id": c.transaction_id, "rail": rail_ or "card", "status": c.status,
-             "decision": c.decision, "priority": round(c.priority, 2), "amount": amount, "resolution": c.resolution,
+             "decision": c.decision, "priority": round(c.priority, 2), "amount": amount, "currency": currency or "USD",
+             "amount_local": amount if amount_local is None else amount_local, "resolution": c.resolution,
              "created_at": c.created_at,
              "agent": None if c.id not in latest else {"status": latest[c.id].status,
                                                        "recommendation": latest[c.id].recommendation,
                                                        "confidence": latest[c.id].confidence}}
-            for c, amount, rail_ in rows], total
+            for c, amount, rail_, currency, amount_local in rows], total
 
 
 def investigation_dict(i: Investigation, include_trace: bool = False) -> dict:
@@ -146,7 +156,7 @@ def get_case(sf: sessionmaker, case_id: str, explainer) -> dict | None:
     return {"case_id": case.id, "status": case.status, "decision": case.decision, "priority": case.priority,
             "resolution": case.resolution, "resolution_note": case.resolution_note, "resolved_by": case.resolved_by,
             "resolved_at": case.resolved_at, "created_at": case.created_at, "transaction_id": case.transaction_id,
-            "rail": tx.rail or "card", "transaction": tx.payload, "model": decision_dict(dec),
+            "rail": tx.rail or "card", "money": money_dict(tx), "transaction": tx.payload, "model": decision_dict(dec),
             "explanation": explainer.explain(case.transaction_id),
             "investigations": [investigation_dict(i) for i in invs],
             "receipts": [receipt_dict(r) for r in receipts]}

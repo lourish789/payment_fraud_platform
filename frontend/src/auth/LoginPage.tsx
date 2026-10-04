@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { ErrorState } from "@/components/ui";
+import { LocalePicker, useT } from "@/i18n";
 import { homeFor, useAuth } from "./AuthContext";
 
 export function LoginPage() {
   const { me, login } = useAuth();
+  const t = useT();
   const navigate = useNavigate();
   const from = (useLocation().state as { from?: string } | null)?.from;
   const [key, setKey] = useState("");
@@ -31,20 +33,20 @@ export function LoginPage() {
     <div className="login">
       <form className="card" onSubmit={submit}>
         <div className="card-body stack">
-          <div className="row"><img src="/favicon.svg" alt="" width={28} height={28} /><h1>PayGuard Console</h1></div>
+          <div className="row"><img src="/favicon.svg" alt="" width={28} height={28} /><h1>{t("PayGuard Console")}</h1></div>
+          <LocalePicker />
           <p className="muted" style={{ margin: 0 }}>
-            Sign in with your API key. Analysts see the case queue, admins see the full dashboard, merchants see the
-            scoring console.
+            {t("Sign in with your API key. Analysts see the case queue, admins see the full dashboard, merchants see the scoring console.")}
           </p>
           <label className="field">
-            <span>API key</span>
+            <span>{t("API key")}</span>
             <input className="input" type="password" autoComplete="off" spellCheck={false} placeholder="pg_..."
                    value={key} onChange={(e) => setKey(e.target.value)} autoFocus required />
           </label>
           {error != null && <ErrorState error={error} />}
-          <button className="btn primary" disabled={busy || key.trim().length < 8}>{busy ? "Signing in..." : "Sign in"}</button>
+          <button className="btn primary" disabled={busy || key.trim().length < 8}>{busy ? t("Signing in...") : t("Sign in")}</button>
           <p className="small muted" style={{ margin: 0 }}>
-            Create keys with <code>payguard create-client --name ops --role admin</code> or in Admin › API clients.
+            {t("Create keys with {command} or in Admin › API clients.", { command: "payguard create-client --name ops --role admin" })}
           </p>
         </div>
       </form>

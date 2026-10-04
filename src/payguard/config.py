@@ -47,11 +47,23 @@ class Settings(BaseSettings):
     frontend_dist: Path = Path("frontend/dist")
     cors_origins: list[str] = []
 
+    # Hosts without a shell (e.g. Render's free tier) can't run `payguard create-client`. When set, startup
+    # ensures an admin client with exactly this key exists. Use a long random value and keep it secret.
+    bootstrap_admin_key: str | None = None
+
     # Payment rails
     rails_enabled: list[str] = ["card", "bank_transfer", "mobile_money", "crypto"]
     rails_config_dir: Path = Path("configs/rails")
     travel_rule_threshold_usd: float = 1000.0  # FATF baseline; EU TFR is 0, US BSA 3000
     sanctions_dir: Path = Path("data/raw/crypto/ofac")
+
+    # Currencies (configs/currency.yaml): risk is computed in USD; other currencies are converted first.
+    currency_path: Path = Path("configs/currency.yaml")
+    fx_rates: dict[str, float] = {}  # overrides, e.g. PAYGUARD_FX_RATES='{"NGN": 1600}'
+
+    # Language of human-readable API text (error messages, reasons, explanations) when neither the request
+    # nor the client's profile names one. Supported: en, fr, yo, ha, ig, pcm (see payguard/i18n.py).
+    default_locale: str = "en"
 
     @property
     def raw_dir(self) -> Path:

@@ -8,11 +8,12 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from payguard.api.deps import PageParams, container, page_params, require
+from payguard.api.deps import PageParams, container, locale_of, page_params, require
 from payguard.api.dto import (AuditOut, ClientCreated, ClientOut, EventsReport, Overview, Page, RailOut, RulesReport,
                               SystemInfo, Timeseries)
 from payguard.api.errors import ApiError, not_found
-from payguard.api.security import Principal, hash_key, new_key
+from payguard.api.security import Principal, hash_key, new_key, validate_preferences
+from payguard.i18n import translate
 from payguard.db.models import ApiClient, utcnow
 from payguard.db.session import write_guard
 from payguard.services import admin as svc
@@ -52,13 +53,20 @@ def timeseries(request: Request, window: WindowName = "30d", anchor: Anchor = "n
 @router.get("/rails", response_model=list[RailOut])
 def rails(request: Request):
     """Each payment rail: enabled, engine (model or scorecard), version, configuration and traffic."""
-    return svc.rails_report(container(request))
+    loc = locale_of(request)
+    out = svc.rails_report(container(request))
+    for r in out:
+        if isinstance(r.get("details", {}).get("weights"), list):
+            r["details"]["weights"] = [{**w, "reason": translate(w.get("reason"), loc)} for w in r["details"]["weights"]]
+    return out
 
 
 @router.get("/rules", response_model=RulesReport)
 def rules(request: Request):
     """Every rule on every rail with its mode (enforce/shadow) and recent hit count."""
-    return svc.rules_report(container(request))
+    loc = locale_of(request)
+    rep = svc.rules_report(container(request))
+    return {**rep, "rules": [{**r, "description": translate(r["description"], loc)} for r in rep["rules"]]}
 
 
 @router.get("/events", response_model=EventsReport)
@@ -80,7 +88,8 @@ def system(request: Request):
 # ---- API clients -----------------------------------------------------------------------------------------
 def _client(c: ApiClient) -> dict:
     return {"client_id": c.id, "name": c.name, "role": c.role, "active": c.active, "key_prefix": c.key_prefix,
-            "created_at": c.created_at, "revoked_at": c.revoked_at}
+            "created_at": c.created_at, "revoked_at": c.revoked_at,
+            "preferences": {"locale": c.locale, "currency": c.display_currency}}
 
 
 @router.get("/clients", response_model=Page[ClientOut])
@@ -99,18 +108,26 @@ def list_clients(request: Request, page: PageParams = Depends(page_params),
 class ClientIn(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     role: Literal["merchant", "analyst", "admin"]
+    locale: Optional[str] = Field(None, max_length=10, description="Profile language: en, fr, yo, ha, ig, pcm")
+    currency: Optional[str] = Field(None, max_length=10, description="Profile display currency, e.g. USD or NGN")
 
 
 @router.post("/clients", response_model=ClientCreated, status_code=201)
 def create(body: ClientIn, request: Request, p: Principal = Depends(require("admin"))):
     """Issue an API key. The key is returned once; only its hash is stored."""
+    try:
+        locale, currency = validate_preferences(body.locale, body.currency, container(request).fx)
+    except ValueError as e:
+        raise ApiError(422, "invalid_preference", str(e))
     key = new_key()
     sf = container(request).session_factory
     with write_guard(sf), sf() as s, s.begin():
-        cli = ApiClient(name=body.name, key_hash=hash_key(key), role=body.role, key_prefix=key[:10])
+        cli = ApiClient(name=body.name, key_hash=hash_key(key), role=body.role, key_prefix=key[:10], locale=locale,
+                        display_currency=currency)
         s.add(cli)
         s.flush()
-        audit.record(s, p, "client.create", cli.id, {"name": body.name, "role": body.role})
+        audit.record(s, p, "client.create", cli.id, {"name": body.name, "role": body.role, "locale": locale,
+                                                     "currency": currency})
         return {**_client(cli), "api_key": key}
 
 

@@ -3,13 +3,40 @@ source column names, so swapping the data source does not touch serving code."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
 SignalValue = Union[float, str, None]
+
+
+def _transaction_id():
+    # Idempotency keys must be retrievable as a URL path segment (GET /v1/transactions/{id}), so no slashes,
+    # whitespace or control characters; this is the usual idempotency-key alphabet.
+    return Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:\-]*$",
+                 examples=["ord-2026-000123"])
+
+
+# Clock skew allowance: an event "from the future" would poison the decayed velocity features of every
+# entity it touches (their state would be folded forward in time).
+MAX_FUTURE_SKEW = timedelta(hours=24)
+MAX_SIGNALS = 1000
+
+
+def _event_time(v: datetime) -> datetime:
+    v = v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if v > datetime.now(timezone.utc) + MAX_FUTURE_SKEW:
+        raise ValueError("event_time is more than 24h in the future")
+    return v
+
+
+def _currency(v: str) -> str:
+    v = (v or "").strip().upper()
+    if not (2 <= len(v) <= 10 and v.isalnum() and v.isascii()):
+        raise ValueError("currency must be an ISO 4217 code (e.g. USD, NGN) or a crypto asset ticker (e.g. BTC)")
+    return v
 
 
 class Card(BaseModel):
@@ -35,10 +62,10 @@ class Device(BaseModel):
 
 
 class TransactionIn(BaseModel):
-    transaction_id: str = Field(..., min_length=1, max_length=64)
+    transaction_id: str = _transaction_id()
     event_time: datetime
-    amount: float = Field(..., gt=0, lt=1e7)
-    currency: str = "USD"
+    amount: float = Field(..., gt=0, lt=1e10, description="In `currency`; converted to USD for scoring")
+    currency: str = Field("USD", description="ISO 4217 code with a configured rate (USD, NGN)")
     product_code: Optional[str] = None
     card: Card = Card()
     billing: Billing = Billing()
@@ -53,7 +80,21 @@ class TransactionIn(BaseModel):
     @field_validator("event_time")
     @classmethod
     def _tz_aware(cls, v: datetime) -> datetime:
-        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        return _event_time(v)
+
+    @field_validator("currency")
+    @classmethod
+    def _cur(cls, v: str) -> str:
+        return _currency(v)
+
+    @field_validator("signals")
+    @classmethod
+    def _bounded_signals(cls, v: dict) -> dict:
+        if len(v) > MAX_SIGNALS:
+            raise ValueError(f"at most {MAX_SIGNALS} signals")
+        if any(len(k) > 64 or (isinstance(x, str) and len(x) > 256) for k, x in v.items()):
+            raise ValueError("signal names are at most 64 characters and string values at most 256")
+        return v
 
     @property
     def ts(self) -> float:
@@ -63,11 +104,13 @@ class TransactionIn(BaseModel):
 class _RailBase(BaseModel):
     """Fields every payment rail shares. The rail-specific payloads below extend this."""
 
-    transaction_id: str = Field(..., min_length=1, max_length=64)
+    transaction_id: str = _transaction_id()
     event_time: datetime
-    amount: float = Field(..., gt=0, lt=1e9)
-    currency: str = "USD"
-    amount_usd: Optional[float] = Field(None, gt=0, description="Amount converted by the caller; defaults to amount")
+    amount: float = Field(..., gt=0, lt=1e12, description="In `currency`")
+    currency: str = Field("USD", description="ISO 4217 code (USD, NGN) or, for crypto, the asset ticker")
+    amount_usd: Optional[float] = Field(None, gt=0, lt=1e10, description=(
+        "Amount converted to USD by the caller. Optional for currencies with a configured rate (converted "
+        "for you); required for crypto assets."))
     account_id: str = Field(..., min_length=1, max_length=128, description="Our customer's account")
     account_age_days: Optional[float] = Field(None, ge=0)
     device: Device = Device()
@@ -75,7 +118,12 @@ class _RailBase(BaseModel):
     @field_validator("event_time")
     @classmethod
     def _tz_aware(cls, v: datetime) -> datetime:
-        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        return _event_time(v)
+
+    @field_validator("currency")
+    @classmethod
+    def _cur(cls, v: str) -> str:
+        return _currency(v)
 
     @property
     def ts(self) -> float:
@@ -83,6 +131,7 @@ class _RailBase(BaseModel):
 
     @property
     def usd(self) -> float:
+        # Set by the scoring service (payguard.currency) before a rail scorer sees the payment.
         return self.amount_usd if self.amount_usd is not None else self.amount
 
 
@@ -166,3 +215,10 @@ class ScoreResponse(BaseModel):
     # What the caller must do beyond approve/review/decline, e.g. a crypto deposit cannot be declined
     # (it is already on-chain), so a sanctions hit means "freeze_funds" + "file_sanctions_report".
     required_actions: list[str] = Field(default_factory=list)
+    # Money: the payment as submitted, and the USD amount risk was computed on. expected_loss is USD;
+    # expected_loss_local is the same figure in the payment's currency (None for crypto assets).
+    currency: Optional[str] = None
+    amount: Optional[float] = None
+    amount_usd: Optional[float] = None
+    fx_rate: Optional[float] = Field(None, description="Units of `currency` per USD we applied; null when the caller sent amount_usd")
+    expected_loss_local: Optional[float] = None

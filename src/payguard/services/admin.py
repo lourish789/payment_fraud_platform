@@ -357,5 +357,6 @@ def system_info(container) -> dict:
         "settings": {"rails_enabled": st.rails_enabled, "rate_limit_rps": st.rate_limit_rps,
                      "rate_limit_burst": st.rate_limit_burst, "travel_rule_threshold_usd": st.travel_rule_threshold_usd,
                      "agent_max_steps": st.agent_max_steps, "run_workers_in_process": st.run_workers_in_process,
-                     "cors_origins": st.cors_origins, "redis": bool(st.redis_url)},
+                     "cors_origins": st.cors_origins, "redis": bool(st.redis_url),
+                     "default_locale": st.default_locale, "fx": container.fx.public()},
     }

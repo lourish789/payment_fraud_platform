@@ -2,10 +2,12 @@
 
 from fastapi import APIRouter, Depends, Request
 
-from payguard.api.deps import container, require
+from payguard.api.deps import container, locale_of, require
 from payguard.api.errors import ApiError
 from payguard.api.security import Principal
+from payguard.currency import CurrencyError
 from payguard.schemas import PaymentIn, ScoreResponse, TransactionIn
+from payguard.services import localize
 from payguard.services.scoring import IdempotencyConflict, RailNotEnabled
 
 router = APIRouter(tags=["scoring"])
@@ -13,7 +15,9 @@ router = APIRouter(tags=["scoring"])
 
 def _score(payment, request: Request, p: Principal) -> ScoreResponse:
     try:
-        return container(request).scoring.score(payment, p.client_id)
+        return localize.score(container(request).scoring.score(payment, p.client_id), locale_of(request))
+    except CurrencyError as e:
+        raise ApiError(422, e.code, e.message, {"currency": e.currency})
     except IdempotencyConflict:
         raise ApiError(409, "idempotency_conflict", "transaction_id already used with a different payload")
     except RailNotEnabled as e:

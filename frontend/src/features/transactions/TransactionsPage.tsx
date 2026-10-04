@@ -1,14 +1,16 @@
 import { useNavigate } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { transactions } from "@/api/endpoints";
-import { Async, Badge, Card, Empty, PageHeader, Pagination, RailBadge, Select } from "@/components/ui";
-import { dateTime, money, prob } from "@/lib/format";
+import { Amount, Async, Badge, Card, Empty, PageHeader, Pagination, RailBadge, Select } from "@/components/ui";
+import { msg, useT } from "@/i18n";
+import { dateTime, prob } from "@/lib/format";
 import { opt, useUrlState } from "@/lib/useUrlState";
-import { DECISION_OPTIONS, RAIL_OPTIONS } from "@/features/options";
+import { codeOptions, decisionOptions, railOptions } from "@/features/options";
 
 const LIMIT = 50;
 
 export function TransactionsPage() {
+  const t = useT();
   const navigate = useNavigate();
   const { values, set, offset, setOffset } = useUrlState({ rail: "all", decision: "all", label: "all", q: "" });
   const q = useQuery({
@@ -20,38 +22,38 @@ export function TransactionsPage() {
 
   return (
     <>
-      <PageHeader title="Transactions" description="Every scored payment on every rail, newest first by event time." />
-      <Card flush title={q.data ? `${q.data.total.toLocaleString()} transactions` : "Transactions"}
+      <PageHeader title={t("Transactions")} description={t("Every scored payment on every rail, newest first by event time.")} />
+      <Card flush title={q.data ? t("Transactions: {n}", { n: q.data.total.toLocaleString() }) : t("Transactions")}
         actions={
           <div className="row">
-            <label className="field"><span>ID prefix</span>
-              <input className="input" placeholder="e.g. 3577" defaultValue={values.q}
+            <label className="field"><span>{t("ID prefix")}</span>
+              <input className="input" placeholder={t("e.g. {example}", { example: "3577" })} defaultValue={values.q}
                      onKeyDown={(e) => e.key === "Enter" && set("q", (e.target as HTMLInputElement).value.trim())} />
             </label>
-            <Select label="Rail" value={values.rail} onChange={(v) => set("rail", v)} options={RAIL_OPTIONS} />
-            <Select label="Decision" value={values.decision} onChange={(v) => set("decision", v)} options={DECISION_OPTIONS} />
-            <Select label="Label" value={values.label} onChange={(v) => set("label", v)}
-              options={[{ value: "all", label: "Any" }, { value: "fraud", label: "Fraud" }, { value: "legit", label: "Legit" }, { value: "unlabelled", label: "Unlabelled" }]} />
+            <Select label={t("Rail")} value={values.rail} onChange={(v) => set("rail", v)} options={railOptions(t)} />
+            <Select label={t("Decision")} value={values.decision} onChange={(v) => set("decision", v)} options={decisionOptions(t)} />
+            <Select label={t("Label")} value={values.label} onChange={(v) => set("label", v)}
+              options={[...codeOptions(t, ["fraud", "legit"], msg("Any")), { value: "unlabelled", label: t("Unlabelled") }]} />
           </div>
         }>
         <Async query={q}>
-          {(page) => page.items.length === 0 ? <Empty>No transactions match these filters.</Empty> : (
+          {(page) => page.items.length === 0 ? <Empty>{t("No transactions match these filters.")}</Empty> : (
             <>
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>Transaction</th><th>Rail</th><th>Event time</th><th className="num">Amount</th>
-                    <th>Decision</th><th className="num">P(fraud)</th><th>Label</th><th>Case</th></tr></thead>
+                  <thead><tr><th>{t("Transaction")}</th><th>{t("Rail")}</th><th>{t("Event time")}</th><th className="num">{t("Amount")}</th>
+                    <th>{t("Decision")}</th><th className="num">{t("P(fraud)")}</th><th>{t("Label")}</th><th>{t("Case")}</th></tr></thead>
                   <tbody>
-                    {page.items.map((t) => (
-                      <tr key={t.transaction_id} className="clickable" onClick={() => navigate(`/transactions/${encodeURIComponent(t.transaction_id)}`)}>
-                        <td className="mono">{t.transaction_id}</td>
-                        <td><RailBadge rail={t.rail} /></td>
-                        <td className="nowrap small">{dateTime(t.event_time)}</td>
-                        <td className="num">{money(t.amount, t.currency ?? "USD")}</td>
-                        <td>{t.decision ? <Badge value={t.decision} /> : "-"}</td>
-                        <td className="num">{prob(t.fraud_probability)}</td>
-                        <td>{t.label === null ? <span className="muted small">-</span> : <Badge value={t.label ? "fraud" : "legit"} />}</td>
-                        <td className="mono small">{t.case_id ?? ""}</td>
+                    {page.items.map((x) => (
+                      <tr key={x.transaction_id} className="clickable" onClick={() => navigate(`/transactions/${encodeURIComponent(x.transaction_id)}`)}>
+                        <td className="mono">{x.transaction_id}</td>
+                        <td><RailBadge rail={x.rail} /></td>
+                        <td className="nowrap small">{dateTime(x.event_time)}</td>
+                        <td className="num"><Amount amount={x.amount_local ?? x.amount} currency={x.currency} amountUsd={x.amount} /></td>
+                        <td>{x.decision ? <Badge value={x.decision} /> : "-"}</td>
+                        <td className="num">{prob(x.fraud_probability)}</td>
+                        <td>{x.label === null ? <span className="muted small">-</span> : <Badge value={x.label ? "fraud" : "legit"} />}</td>
+                        <td className="mono small">{x.case_id ?? ""}</td>
                       </tr>
                     ))}
                   </tbody>

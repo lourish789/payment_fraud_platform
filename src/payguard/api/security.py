@@ -29,15 +29,44 @@ def new_key() -> str:
     return "pg_" + secrets.token_urlsafe(32)
 
 
-def create_client(session_factory: sessionmaker, name: str, role: str) -> tuple[str, str]:
+def validate_preferences(locale: str | None, currency: str | None, fx=None) -> tuple[str | None, str | None]:
+    """Normalise profile preferences; ValueError (with an English message id) if unsupported."""
+    from payguard.i18n import LOCALES, normalize
+
+    loc = None
+    if locale:
+        loc = normalize(locale)
+        if loc is None:
+            raise ValueError(f"unsupported locale {locale} (supported: {', '.join(LOCALES)})")
+    cur = currency.strip().upper() if currency else None
+    if cur and fx is not None and cur not in fx.display:
+        raise ValueError(f"currency {cur} cannot be used for display (supported: {', '.join(fx.display)})")
+    return loc, cur
+
+
+def create_client(session_factory: sessionmaker, name: str, role: str, locale: str | None = None,
+                  currency: str | None = None, fx=None) -> tuple[str, str]:
     if role not in ROLES:
         raise ValueError(f"role must be one of {sorted(ROLES)}")
+    locale, currency = validate_preferences(locale, currency, fx)
     key = new_key()
     with session_factory() as s, s.begin():
-        c = ApiClient(name=name, key_hash=hash_key(key), role=role, key_prefix=key[:10])
+        c = ApiClient(name=name, key_hash=hash_key(key), role=role, key_prefix=key[:10], locale=locale,
+                      display_currency=currency)
         s.add(c)
         s.flush()
         return c.id, key
+
+
+def ensure_admin(session_factory: sessionmaker, key: str, name: str = "bootstrap-admin") -> bool:
+    """Create an admin client with a caller-chosen key unless one with that key exists. True if created."""
+    if len(key) < 24:
+        raise ValueError("bootstrap admin key must be at least 24 characters")
+    with session_factory() as s, s.begin():
+        if s.scalar(select(ApiClient.id).where(ApiClient.key_hash == hash_key(key))):
+            return False
+        s.add(ApiClient(name=name, key_hash=hash_key(key), role="admin", key_prefix=key[:10]))
+        return True
 
 
 @dataclass(frozen=True)
@@ -45,6 +74,8 @@ class Principal:
     client_id: str
     name: str
     role: str
+    locale: str | None = None  # profile preferences (None = not chosen)
+    currency: str | None = None
 
     def allows(self, role: str) -> bool:
         # admin can do everything; analysts can't score, merchants can't read cases.
@@ -67,14 +98,14 @@ class Authenticator:
                 return hit[1]
         with self.sf() as s:
             c = s.scalar(select(ApiClient).where(ApiClient.key_hash == h, ApiClient.active.is_(True)))
-            p = Principal(c.id, c.name, c.role) if c else None
+            p = Principal(c.id, c.name, c.role, c.locale, c.display_currency) if c else None
         with self._lock:
             self._cache[h] = (now, p)
         return p
 
     def invalidate(self) -> None:
-        """Drop cached lookups so a revoked key stops working on this replica immediately (other replicas
-        within the cache TTL)."""
+        """Drop cached lookups so a revoked key stops working (and changed preferences apply) on this replica
+        immediately; other replicas within the cache TTL."""
         with self._lock:
             self._cache.clear()
 

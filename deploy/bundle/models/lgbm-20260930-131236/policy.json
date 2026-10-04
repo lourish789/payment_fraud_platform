@@ -1,0 +1,7 @@
+{
+  "decline_threshold": 0.7857142857142857,
+  "review_cost": 28.411714822456535,
+  "base_review_cost": 5.0,
+  "review_capacity": 0.03,
+  "decline_target_precision": 0.9
+}

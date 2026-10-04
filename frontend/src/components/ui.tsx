@@ -1,13 +1,16 @@
 // Shared presentational components. No data fetching here: pages fetch, components render.
 import type { ReactNode } from "react";
 import { ApiError } from "@/api/client";
-import { RAIL_LABEL, humanize } from "@/lib/format";
+import { useT } from "@/i18n";
+import { codeLabel, RAIL_LABEL } from "@/i18n/labels";
+import { displayCurrency, money, usd } from "@/lib/format";
 
 export function Spinner() {
-  return <span className="spinner" role="status" aria-label="Loading" />;
+  const t = useT();
+  return <span className="spinner" role="status" aria-label={t("Loading")} />;
 }
 
-export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
     <div className="page-header">
       <div>
@@ -48,33 +51,57 @@ export function Stat({ label, value, sub, tone }: { label: string; value: ReactN
   );
 }
 
+/** A status pill. A string value is an API code (approve, open, hold_payment, ...): its label is translated
+ * and its colour comes from the code, never from the translated text. */
 export function Badge({ value, tone, title }: { value: ReactNode; tone?: string; title?: string }) {
+  const t = useT();
   const cls = tone ?? (typeof value === "string" ? value : "");
-  return <span className={`badge ${cls}`} title={title}>{typeof value === "string" ? humanize(value) : value}</span>;
+  return <span className={`badge ${cls}`} title={title}>{typeof value === "string" ? t(codeLabel(value)) : value}</span>;
+}
+
+/** An API code as translated text (for chips, lists and selects). */
+export function Code({ value }: { value: string }) {
+  const t = useT();
+  return <>{t(codeLabel(value))}</>;
 }
 
 export function RailBadge({ rail }: { rail: string }) {
+  const t = useT();
   return (
     <span className="badge" style={{ background: `color-mix(in srgb, var(--rail-${rail}) 14%, transparent)`, color: `var(--rail-${rail})` }}>
-      {RAIL_LABEL[rail] ?? rail}
+      {RAIL_LABEL[rail] ? t(RAIL_LABEL[rail]) : rail}
     </span>
   );
 }
 
 export function Health({ ok, label }: { ok: boolean; label: string }) {
-  return <span className="row" style={{ gap: 6 }}><span className={`dot ${ok ? "up" : "down"}`} />{humanize(label)}</span>;
+  const t = useT();
+  return <span className="row" style={{ gap: 6 }}><span className={`dot ${ok ? "up" : "down"}`} />{t(codeLabel(label))}</span>;
+}
+
+/** A payment's amount as paid, with its value in the viewer's display currency when that differs. */
+export function Amount({ amount, currency, amountUsd }: { amount: number | null | undefined; currency?: string | null; amountUsd?: number | null }) {
+  const cur = (currency || "USD").toUpperCase();
+  const showConverted = amountUsd !== null && amountUsd !== undefined && cur !== displayCurrency();
+  return (
+    <span className="amount">
+      {money(amount, cur)}
+      {showConverted && <span className="small muted"> ≈ {usd(amountUsd)}</span>}
+    </span>
+  );
 }
 
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  const t = useT();
   const e = error instanceof ApiError ? error : null;
   return (
     <div className="alert-box error" role="alert">
       <div className="spread">
         <div>
-          <b>{e ? humanize(e.code) : "Something went wrong"}</b>: {e?.message ?? String((error as Error)?.message ?? error)}
-          {e?.requestId && <div className="small mono">request {e.requestId}</div>}
+          <b>{e ? t(codeLabel(e.code)) : t("Something went wrong")}</b>: {e?.message ?? String((error as Error)?.message ?? error)}
+          {e?.requestId && <div className="small mono">{t("request {id}", { id: e.requestId })}</div>}
         </div>
-        {onRetry && <button className="btn small" onClick={onRetry}>Retry</button>}
+        {onRetry && <button className="btn small" onClick={onRetry}>{t("Retry")}</button>}
       </div>
     </div>
   );
@@ -127,14 +154,15 @@ export function Select({ label, value, onChange, options }: {
 }
 
 export function Pagination({ total, limit, offset, onChange }: { total: number; limit: number; offset: number; onChange: (offset: number) => void }) {
+  const t = useT();
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + limit, total);
   return (
     <div className="pagination">
-      <span>{from}-{to} of {total.toLocaleString()}</span>
+      <span>{t("{from}-{to} of {total}", { from, to, total: total.toLocaleString() })}</span>
       <div className="row">
-        <button className="btn small" disabled={offset === 0} onClick={() => onChange(Math.max(0, offset - limit))}>Previous</button>
-        <button className="btn small" disabled={to >= total} onClick={() => onChange(offset + limit)}>Next</button>
+        <button className="btn small" disabled={offset === 0} onClick={() => onChange(Math.max(0, offset - limit))}>{t("Previous")}</button>
+        <button className="btn small" disabled={to >= total} onClick={() => onChange(offset + limit)}>{t("Next")}</button>
       </div>
     </div>
   );

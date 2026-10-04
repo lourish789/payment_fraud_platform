@@ -1,8 +1,9 @@
 """Synchronous scoring path, shared by every payment rail. Budget: p99 < 50 ms on one core, excluding network.
 
     1. idempotency   same transaction_id + same payload -> stored decision; different payload -> 409
-    2. assess        the rail's scorer (services/rails.py): features, model/scorecard, rules, intelligence
-    3. persist       transaction + decision + case + outbox events in ONE DB transaction
+    2. currency      convert to USD, the currency every model, scorecard and threshold is in (payguard/currency.py)
+    3. assess        the rail's scorer (services/rails.py): features, model/scorecard, rules, intelligence
+    4. persist       transaction + decision + case + outbox events in ONE DB transaction
 
 Rail scorers never touch the database; this service never knows how a rail scores. That boundary is
 what makes "every payment method reviewable": all rails produce the same decision record, the same
@@ -19,13 +20,14 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from payguard import observability as obs
+from payguard.currency import Converted, FxTable
 from payguard.db.models import Case, DecisionRecord, Transaction, clean_json
 from payguard.db.session import write_guard
 from payguard.events import enqueue
@@ -50,6 +52,15 @@ def payload_hash(payment) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
+def stored_money(tx: Transaction) -> Converted:
+    """The conversion a stored transaction was scored with (rows from before currencies were tracked are USD)."""
+    currency = tx.currency or (tx.payload or {}).get("currency") or "USD"
+    local = tx.amount_local if tx.amount_local is not None else tx.amount
+    given = (tx.payload or {}).get("amount_usd")
+    rate = None if given is not None else (local / tx.amount if tx.amount else None)
+    return Converted(currency, local, tx.amount, rate)
+
+
 class ModelHolder:
     """Champion/challenger bundles, swappable at runtime (promotion reloads without a restart)."""
 
@@ -72,10 +83,19 @@ class ModelHolder:
             return self.champion, self.challenger
 
 
+def _money(m: Converted, expected_loss_usd: float) -> dict:
+    # Expected loss in the payment's own currency, at the rate the payment was converted with.
+    rate = m.fx_rate if m.fx_rate is not None else (m.amount / m.amount_usd if m.amount_usd else None)
+    local = None if rate is None else expected_loss_usd * rate
+    return {"currency": m.currency, "amount": m.amount, "amount_usd": round(m.amount_usd, 6), "fx_rate": m.fx_rate,
+            "expected_loss_local": None if local is None else round(local, 4)}
+
+
 @dataclass
 class ScoringService:
     scorers: dict
     session_factory: sessionmaker
+    fx: FxTable = field(default_factory=lambda: FxTable({"USD": 1.0}))
 
     def score(self, payment, client_id: str) -> ScoreResponse:
         t0 = time.perf_counter()
@@ -83,10 +103,19 @@ class ScoringService:
         scorer = self.scorers.get(rail)
         if scorer is None:
             raise RailNotEnabled(rail)
-        phash = payload_hash(payment)
+        phash = payload_hash(payment)  # of the payment as submitted, before conversion
         existing = self._existing(payment.transaction_id, phash)
         if existing is not None:
             return existing
+
+        # Risk is computed in USD. The card pipeline reads `amount`; rail scorers read `amount_usd`.
+        money = self.fx.convert(payment)  # raises CurrencyError
+        submitted = payment
+        if rail == "card":
+            if money.currency != "USD":
+                payment = payment.model_copy(update={"amount": money.amount_usd, "currency": "USD"})
+        elif payment.amount_usd is None:
+            payment = payment.model_copy(update={"amount_usd": money.amount_usd})
 
         t = time.perf_counter()
         a = scorer.assess(payment)
@@ -98,8 +127,9 @@ class ScoringService:
         try:
             with write_guard(self.session_factory), self.session_factory() as s, s.begin():
                 s.add(Transaction(id=payment.transaction_id, client_id=client_id, rail=rail,
-                                  payload=payment.model_dump(mode="json"), payload_hash=phash,
-                                  event_time=payment.event_time, amount=payment.amount, **a.keys))
+                                  payload=submitted.model_dump(mode="json"), payload_hash=phash,
+                                  event_time=payment.event_time, amount=money.amount_usd, currency=money.currency,
+                                  amount_local=money.amount, **a.keys))
                 s.flush()  # surface a concurrent duplicate as IntegrityError before the other inserts
                 s.add(DecisionRecord(transaction_id=payment.transaction_id, decision=a.decision.value,
                                      fraud_probability=a.p, raw_score=a.raw, expected_loss=a.expected_loss,
@@ -107,7 +137,8 @@ class ScoringService:
                                      rules=a.rules, actions=a.actions, features=clean_json(a.features),
                                      explanation=a.explanation, shadow=a.shadow, latency_ms=latency_ms))
                 event = {"transaction_id": payment.transaction_id, "rail": rail, "decision": a.decision.value,
-                         "fraud_probability": a.p, "amount": payment.amount, "model_version": a.model_version,
+                         "fraud_probability": a.p, "amount": money.amount_usd, "currency": money.currency,
+                         "amount_local": money.amount, "model_version": a.model_version,
                          "shadow": a.shadow, "degraded": a.degraded, "actions": a.actions}
                 enqueue(s, "decision.made", payment.transaction_id, event)
                 if a.decision != Decision.APPROVE:
@@ -131,7 +162,7 @@ class ScoringService:
                              reasons=a.reasons, model_version=a.model_version,
                              rules_triggered=[r for r in a.rules if not r.startswith("shadow:")], case_id=case_id,
                              latency_ms=round((time.perf_counter() - t0) * 1000, 3), degraded=a.degraded,
-                             rail=rail, required_actions=a.actions)
+                             rail=rail, required_actions=a.actions, **_money(money, a.expected_loss))
 
     def _existing(self, transaction_id: str, phash: str) -> ScoreResponse | None:
         with self.session_factory() as s:
@@ -151,4 +182,5 @@ class ScoringService:
                              reasons=[ReasonCode(**r) for r in dec.reasons], model_version=dec.model_version,
                              rules_triggered=[r for r in dec.rules if not r.startswith("shadow:")],
                              case_id=case_id, latency_ms=dec.latency_ms, idempotent_replay=True,
-                             rail=tx.rail or "card", required_actions=dec.actions or [])
+                             rail=tx.rail or "card", required_actions=dec.actions or [],
+                             **_money(stored_money(tx), dec.expected_loss))

@@ -3,14 +3,17 @@ import { Link } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { receipts } from "@/api/endpoints";
 import { Async, Badge, Card, Empty, PageHeader, Pagination, Select } from "@/components/ui";
+import { useT } from "@/i18n";
 import { dateTime } from "@/lib/format";
 import { opt, useUrlState } from "@/lib/useUrlState";
+import { codeOptions } from "@/features/options";
 import { ReceiptResultView, ReceiptUpload } from "./ReceiptUpload";
 
 const LIMIT = 25;
-const VERDICTS = ["all", "verified", "mismatch", "not_found", "suspected_tampering", "unreadable"];
+const VERDICTS = ["verified", "mismatch", "not_found", "suspected_tampering", "unreadable"];
 
 export function ReceiptsPage() {
+  const t = useT();
   const { values, set, offset, setOffset } = useUrlState({ verdict: "all" });
   const [selected, setSelected] = useState<string | null>(null);
   const q = useQuery({ queryKey: ["receipts", values, offset], queryFn: () => receipts.list({ verdict: opt(values.verdict), limit: LIMIT, offset }), placeholderData: keepPreviousData });
@@ -18,15 +21,15 @@ export function ReceiptsPage() {
 
   return (
     <>
-      <PageHeader title="Receipts" description="Proof-of-payment screenshots checked by OCR against the ledger, with image forensics as the fallback." />
+      <PageHeader title={t("Receipts")} description={t("Proof-of-payment screenshots checked by OCR against the ledger, with image forensics as the fallback.")} />
       <div className="grid grid-3">
-        <Card flush className="span-2" title="Verified receipts"
-          actions={<Select label="Verdict" value={values.verdict} onChange={(v) => set("verdict", v)} options={VERDICTS.map((v) => ({ value: v, label: v === "all" ? "All" : v.replace(/_/g, " ") }))} />}>
+        <Card flush className="span-2" title={t("Verified receipts")}
+          actions={<Select label={t("Verdict")} value={values.verdict} onChange={(v) => set("verdict", v)} options={codeOptions(t, VERDICTS)} />}>
           <Async query={q}>
-            {(page) => page.items.length === 0 ? <Empty>No receipts yet.</Empty> : (
+            {(page) => page.items.length === 0 ? <Empty>{t("No receipts yet.")}</Empty> : (
               <>
                 <div className="table-wrap"><table className="table">
-                  <thead><tr><th>Receipt</th><th>Verdict</th><th>Claimed reference</th><th>Case</th><th>Uploaded</th></tr></thead>
+                  <thead><tr><th>{t("Receipt")}</th><th>{t("Verdict")}</th><th>{t("Claimed reference")}</th><th>{t("Case")}</th><th>{t("Uploaded")}</th></tr></thead>
                   <tbody>
                     {page.items.map((r) => (
                       <tr key={r.receipt_id} className="clickable" onClick={() => setSelected(r.receipt_id)}>
@@ -44,8 +47,8 @@ export function ReceiptsPage() {
           </Async>
         </Card>
         <div className="stack">
-          {selected && <Card title="Receipt detail"><Async query={detail}>{(d) => <ReceiptResultView r={d.result} />}</Async></Card>}
-          <Card title="Verify a receipt"><ReceiptUpload onDone={() => q.refetch()} /></Card>
+          {selected && <Card title={t("Receipt detail")}><Async query={detail}>{(d) => <ReceiptResultView r={d.result} />}</Async></Card>}
+          <Card title={t("Verify a receipt")}><ReceiptUpload onDone={() => q.refetch()} /></Card>
         </div>
       </div>
     </>
@@ -54,9 +57,10 @@ export function ReceiptsPage() {
 
 /** Merchant view: upload only (merchants cannot list other receipts). */
 export function VerifyReceiptPage() {
+  const t = useT();
   return (
     <>
-      <PageHeader title="Verify a receipt" description="Upload a customer's proof-of-payment screenshot. We read it, match it against the ledger and check the image for edits." />
+      <PageHeader title={t("Verify a receipt")} description={t("Upload a customer's proof-of-payment screenshot. We read it, match it against the ledger and check the image for edits.")} />
       <div style={{ maxWidth: 640 }}><Card><ReceiptUpload /></Card></div>
     </>
   );

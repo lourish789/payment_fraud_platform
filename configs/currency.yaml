@@ -1,0 +1,17 @@
+# Currencies the platform accepts and converts. Risk is computed in the base currency (USD): the card model
+# was trained on USD amounts, and every rail's thresholds (Travel Rule, large-transfer points, the
+# expected-loss policy) are in USD. A payment in another currency is converted at the rate below before it
+# is scored; the original amount and currency are kept on the record and shown to people.
+#
+# rates: units of the currency per 1 USD. These are static reference rates for this deployment, not a live
+# feed. In production, refresh them daily from your treasury rate source (for NGN, e.g. the CBN NFEM
+# closing rate) and pass an explicit amount_usd when you converted at a different rate: the caller's
+# amount_usd always wins. Override a rate without editing this file: PAYGUARD_FX_RATES='{"NGN": 1600}'.
+base: USD
+as_of: "2026-10-01"
+source: "Static reference rate; replace with a daily treasury feed in production"
+rates:
+  USD: 1.0
+  NGN: 1550.0
+# Currencies people can choose to see amounts in (console display currency, client profiles).
+display: [USD, NGN]

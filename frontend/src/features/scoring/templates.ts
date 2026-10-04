@@ -1,13 +1,17 @@
 import type { Rail } from "@/api/types";
 
-// Example payloads per rail (same shapes as the smoke test). The console fills in a fresh
-// transaction_id and the current time each time a template is loaded.
-export function template(rail: Rail): Record<string, unknown> {
+// Example payloads per rail (same shapes as the smoke test). The console fills in a fresh transaction_id and
+// the current time each time a template is loaded. Fiat amounts are written in the chosen payment currency
+// (the server converts to USD for scoring); crypto is always in the asset, with the caller's amount_usd.
+const USD_AMOUNTS: Record<Exclude<Rail, "crypto">, number> = { card: 249.99, bank_transfer: 4800, mobile_money: 250 };
+
+export function template(rail: Rail, currency = "USD", rate = 1): Record<string, unknown> {
   const base = { transaction_id: `console-${rail}-${Date.now().toString(36)}`, event_time: new Date().toISOString() };
+  const fiat = (r: Exclude<Rail, "crypto">) => ({ amount: Math.round(USD_AMOUNTS[r] * rate * 100) / 100, currency });
   switch (rail) {
     case "card":
       return {
-        rail, ...base, amount: 249.99, currency: "USD", product_code: "W",
+        rail, ...base, ...fiat(rail), product_code: "W",
         card: { bin: "9500", issuer: "111", country_code: "150", category_code: "226", network: "visa", type: "debit" },
         billing: { region: "325", country: "87" }, payer_email_domain: "gmail.com",
         device: { type: "mobile", info: "iOS Device", os: "iOS 11.2", browser: "mobile safari 11.0", screen: "2208x1242" },
@@ -15,12 +19,12 @@ export function template(rail: Rail): Record<string, unknown> {
       };
     case "bank_transfer":
       return {
-        rail, ...base, amount: 4800, currency: "USD", account_id: "acct-1029", account_age_days: 400,
+        rail, ...base, ...fiat(rail), account_id: "acct-1029", account_age_days: 400,
         beneficiary_account: "mule-001", beneficiary_bank: "058", beneficiary_name: "J. Doe", channel: "app", scheme: "NIP",
       };
     case "mobile_money":
       return {
-        rail, ...base, amount: 250, currency: "USD", account_id: "wallet-77", account_age_days: 210,
+        rail, ...base, ...fiat(rail), account_id: "wallet-77", account_age_days: 210,
         kind: "cash_out", counterparty_wallet: "agent-wallet-9", agent_id: "agent-9", sim_swap_days: 0.3,
       };
     case "crypto":

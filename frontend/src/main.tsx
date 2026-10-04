@@ -5,6 +5,7 @@ import { RouterProvider } from "react-router-dom";
 import { ApiError } from "@/api/client";
 import { router } from "@/app/router";
 import { AuthProvider } from "@/auth/AuthContext";
+import { I18nProvider } from "@/i18n";
 import "@/styles/global.css";
 
 const queryClient = new QueryClient({
@@ -21,9 +22,11 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <RouterProvider router={router} />
-      </AuthProvider>
+      <I18nProvider>
+        <AuthProvider>
+          <RouterProvider router={router} />
+        </AuthProvider>
+      </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

@@ -19,6 +19,8 @@ COPY src ./src
 RUN pip install --no-cache-dir ".[vision,postgres]"
 COPY configs ./configs
 COPY --from=console /console/dist ./frontend/dist
+# Champion card model + vision thresholds (small, committed). A mounted ./artifacts volume replaces it.
+COPY deploy/bundle ./artifacts
 
 ENV PAYGUARD_ARTIFACTS_DIR=/app/artifacts \
     PAYGUARD_DATA_DIR=/app/data \
@@ -28,5 +30,6 @@ RUN useradd --uid 10001 --create-home payguard && mkdir -p /app/artifacts /app/d
 USER payguard
 
 EXPOSE 8000
-HEALTHCHECK --interval=15s --timeout=3s CMD python -c "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/healthz').status != 200)"
-CMD ["uvicorn", "payguard.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# PORT and WEB_CONCURRENCY let hosts such as Render pick the port and size the worker count to the instance.
+HEALTHCHECK --interval=15s --timeout=3s CMD python -c "import os,urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('PORT', '8000')).status != 200)"
+CMD ["sh", "-c", "exec uvicorn payguard.api.app:create_app --factory --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-2}"]

@@ -6,14 +6,14 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from payguard.agent.service import enqueue_investigation
-from payguard.api.deps import PageParams, container, page_params, require
+from payguard.api.deps import PageParams, container, locale_of, page_params, require
 from payguard.api.dto import CaseDetail, CaseSummary, Page, Queued, Resolved
 from payguard.api.errors import ApiError, not_found
 from payguard.api.security import Principal
 from payguard.db.models import Case, Label, utcnow
 from payguard.db.session import write_guard
 from payguard.events import enqueue
-from payguard.services import audit, queries
+from payguard.services import audit, localize, queries
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -36,7 +36,7 @@ def get_case(case_id: str, request: Request, _=Depends(require("analyst"))):
     case = queries.get_case(c.session_factory, case_id, c.explainer)
     if case is None:
         raise not_found("case")
-    return case
+    return localize.case(case, locale_of(request))
 
 
 class Resolution(BaseModel):

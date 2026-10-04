@@ -28,6 +28,8 @@ from payguard.simulate import test_month  # noqa: E402
 from payguard.vision.receipts import forge_field, jpeg, random_fields, render  # noqa: E402
 
 results: list[dict] = []
+# Rail payments get per-run ids, so the script can be re-run against a database that already holds them.
+RUN = time.strftime("%Y%m%d%H%M%S")
 
 
 def check(name: str, ok: bool, detail: str = "", ms: float | None = None) -> bool:
@@ -87,29 +89,31 @@ def real_crypto_samples() -> dict:
 
 def rail_checks(c: httpx.Client, H: dict) -> None:
     print("== every payment rail via POST /v1/payments/score")
+    run = RUN
     t0 = "2026-10-01T09:00:00Z"
     base = {"currency": "USD", "account_age_days": 400}
     for i in range(6):  # six different senders pay one beneficiary within hours: mule fan-in
-        bt = {"rail": "bank_transfer", "transaction_id": f"smoke-bt-{i}", "event_time": f"2026-10-01T0{i}:00:00Z",
-              "amount": 1500.0, "account_id": f"victim-{i}", "beneficiary_account": "mule-001", "scheme": "NIP", **base}
+        bt = {"rail": "bank_transfer", "transaction_id": f"smoke-bt-{i}-{run}", "event_time": f"2026-10-01T0{i}:00:00Z",
+              "amount": 1500.0, "account_id": f"victim-{i}", "beneficiary_account": f"mule-{run}", "scheme": "NIP", **base}
         r = c.post("/v1/payments/score", json=bt, headers=H["merchant"])
     body = r.json()
     check("bank_transfer: mule fan-in -> review + hold_payment", r.status_code == 200 and body["decision"] == "review"
           and "hold_payment" in body["required_actions"], f"p={body.get('fraud_probability')}")
-    mm = {"rail": "mobile_money", "transaction_id": "smoke-mm-1", "event_time": t0, "amount": 250.0, "account_id": "wallet-1",
+    mm = {"rail": "mobile_money", "transaction_id": f"smoke-mm-1-{run}", "event_time": t0, "amount": 250.0, "account_id": "wallet-1",
           "kind": "cash_out", "counterparty_wallet": "agent-wallet", "agent_id": "agent-9", "sim_swap_days": 0.3, **base}
     r = c.post("/v1/payments/score", json=mm, headers=H["merchant"])
     check("mobile_money: cash-out right after SIM swap -> review", r.status_code == 200 and r.json()["decision"] == "review",
           ", ".join(r.json()["rules_triggered"]))
 
     s = real_crypto_samples()
-    cx = {"rail": "crypto", "currency": "BTC", "asset": "BTC", "chain": "bitcoin", "account_id": "trader-1", **base}
-    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": "smoke-cx-1", "event_time": t0,
+    # `base` first: its USD currency must not overwrite the asset (0.2 BTC is not $0.20).
+    cx = {**base, "rail": "crypto", "currency": "BTC", "asset": "BTC", "chain": "bitcoin", "account_id": "trader-1"}
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": f"smoke-cx-1-{run}", "event_time": t0,
                "amount": 0.2, "amount_usd": 12000, "direction": "withdrawal", "counterparty_address": s["sanctioned"]})
     b = r.json()
     check("crypto: withdrawal to real OFAC-sanctioned address -> decline + block",
           b["decision"] == "decline" and "block_withdrawal" in b["required_actions"], f"address {s['sanctioned']}")
-    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": "smoke-cx-2", "event_time": t0,
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": f"smoke-cx-2-{run}", "event_time": t0,
                "amount": 0.2, "amount_usd": 12000, "direction": "deposit", "counterparty_address": s["sanctioned"]})
     b = r.json()
     check("crypto: deposit from sanctioned address -> frozen, not declined",
@@ -118,16 +122,16 @@ def rail_checks(c: httpx.Client, H: dict) -> None:
         row = s[kind]
         when = s["when"](int(row.step)).isoformat().replace("+00:00", "Z")
         r = c.post("/v1/payments/score", headers=H["merchant"], json={
-            **cx, "account_id": f"trader-{kind}", "transaction_id": f"smoke-cx-{kind}", "event_time": when,
+            **cx, "account_id": f"trader-{kind}", "transaction_id": f"smoke-cx-{kind}-{run}", "event_time": when,
             "amount": 0.05, "amount_usd": 900, "direction": "deposit", "counterparty_address": row.input_address,
             "tx_hash": str(int(row.txId))})
         b = r.json()
-        cp = c.get(f"/v1/transactions/smoke-cx-{kind}", headers=H["analyst"]).json()["decision"]
+        cp = c.get(f"/v1/transactions/smoke-cx-{kind}-{run}", headers=H["analyst"]).json()["decision"]
         expected_flag = kind == "illicit"
         check(f"crypto: deposit carried by a real Elliptic {kind} tx -> {'flagged' if expected_flag else 'approved'}",
               (b["decision"] != "approve") == expected_flag,
               f"decision {b['decision']}, p={b['fraud_probability']}, model {cp['model_version']}")
-    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": "smoke-cx-3", "event_time": t0,
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={**cx, "transaction_id": f"smoke-cx-3-{run}", "event_time": t0,
                "amount": 0.1, "amount_usd": 6000, "direction": "withdrawal", "counterparty_vasp": "OtherExchange",
                "counterparty_address": "bc1qsmoketestaddressxxxxxxxxxxxxxxxxxx"})
     check("crypto: VASP transfer above threshold without Travel Rule data -> review",
@@ -135,11 +139,37 @@ def rail_checks(c: httpx.Client, H: dict) -> None:
     r = c.post("/v1/payments/score", headers=H["merchant"], json={"rail": "cheque", "transaction_id": "x",
                                                                   "event_time": t0, "amount": 1})
     check("unknown rail -> 422", r.status_code == 422)
-    queue = c.get("/v1/cases", headers=H["analyst"], params={"limit": 200}).json()["items"]
-    rails = {c.get(f"/v1/transactions/{q['transaction_id']}", headers=H["analyst"]).json()["transaction"].get("rail", "card")
-             for q in queue}
+    rails = {rail for rail in ("card", "bank_transfer", "mobile_money", "crypto")
+             if c.get("/v1/cases", headers=H["analyst"], params={"rail": rail, "status": "all", "limit": 1}).json()["total"]}
     check("all four rails land in the one analyst queue", {"card", "bank_transfer", "mobile_money", "crypto"} <= rails,
           ", ".join(sorted(rails)))
+
+
+def currency_and_language_checks(c: httpx.Client, H: dict, card: dict) -> None:
+    print("== currencies (USD/NGN) and languages")
+    meta = c.get("/v1/meta").json()
+    rate = meta["currencies"]["rates"]["NGN"]
+    check("GET /v1/meta (public) -> languages and currencies", [x["code"] for x in meta["locales"]][:3] == ["en", "fr", "yo"],
+          f"NGN rate {rate}, display {meta['currencies']['display']}")
+    usd = c.post("/v1/transactions/score", headers=H["merchant"], json={**card, "transaction_id": f"smoke-usd-{RUN}"}).json()
+    ngn = c.post("/v1/transactions/score", headers=H["merchant"], json={
+        **card, "transaction_id": f"smoke-ngn-{RUN}", "currency": "NGN", "amount": round(card["amount"] * rate, 2)}).json()
+    check("card in NGN is scored on its USD value (same risk as the USD twin)",
+          abs(ngn["amount_usd"] - card["amount"]) < 0.01 and ngn["decision"] == usd["decision"],
+          f"NGN {ngn['amount']:,.2f} -> ${ngn['amount_usd']:,.2f}; p {ngn['fraud_probability']} vs {usd['fraud_probability']}")
+    bt = {"rail": "bank_transfer", "transaction_id": f"smoke-ngn-bt-{RUN}", "event_time": card["event_time"],
+          "amount": 300 * rate, "currency": "NGN", "account_id": f"ngn-{RUN}", "account_age_days": 400,
+          "beneficiary_account": f"ngn-benef-{RUN}"}
+    r = c.post("/v1/payments/score", headers=H["merchant"], json=bt).json()
+    check("bank transfer in NGN without amount_usd -> converted", abs(r["amount_usd"] - 300) < 0.01 and r["fx_rate"] == rate)
+    r = c.post("/v1/payments/score", headers=H["merchant"], json={**bt, "transaction_id": f"smoke-xyz-{RUN}", "currency": "XYZ"})
+    check("unknown currency -> 422 unsupported_currency", r.status_code == 422 and r.json()["error"]["code"] == "unsupported_currency")
+    r = c.get("/v1/cases/case_nope", headers={**H["analyst"], "Accept-Language": "fr"})
+    check("error message follows Accept-Language (code unchanged)",
+          r.json()["error"]["code"] == "not_found" and r.json()["error"]["message"] == "dossier inconnu(e)"
+          and r.headers.get("content-language") == "fr", r.json()["error"]["message"])
+    r = c.get("/v1/cases/case_nope", headers=H["analyst"], params={"lang": "yo"})
+    check("?lang=yo overrides for one request", r.json()["error"]["message"] == "a kò mọ̀ ẹjọ́ yìí", r.json()["error"]["message"])
 
 
 def main() -> int:
@@ -213,7 +243,10 @@ def main() -> int:
     pri = [q["priority"] for q in queue]
     check("GET /v1/cases -> queue ordered by expected loss", r.status_code == 200 and queue and pri == sorted(pri, reverse=True),
           f"{len(queue)} open cases")
-    case = queue[0]
+    # The case under test must be one this run scored (its receipts are rendered from our own payloads);
+    # on a database that already holds a replay, the head of the queue usually isn't.
+    ours = max((v for v in scored.values() if v[0].get("case_id")), key=lambda v: v[0]["expected_loss"])
+    case = {"case_id": ours[0]["case_id"], "transaction_id": ours[0]["transaction_id"]}
     r = c.get(f"/v1/cases/{case['case_id']}", headers=H["analyst"])
     expl = r.json().get("explanation") or []
     check("GET /v1/cases/{id} -> TreeSHAP explanation", r.status_code == 200 and len(expl) > 0,
@@ -270,6 +303,7 @@ def main() -> int:
     check("label visible on transaction", r.json()["label"] is not None)
 
     rail_checks(c, H)
+    currency_and_language_checks(c, H, samples[-1][0])
 
     print("== monitoring and model registry")
     r = c.get("/v1/monitoring/drift", headers=H["analyst"])
@@ -283,6 +317,8 @@ def main() -> int:
     check("POST /v1/models/promote challenger -> 200", r.status_code == 200)
     extra = test_month(ROOT / "data" / "processed", 1, offset=a.n)
     p = next(iter_transactions(extra))[0].model_dump(mode="json")
+    # A fresh id: a transaction already scored (e.g. by a replay) is an idempotent replay with no shadow score.
+    p["transaction_id"] = f"smoke-shadow-{int(time.time())}"
     c.post("/v1/transactions/score", json=p, headers=H["merchant"])
     shadow = c.get(f"/v1/transactions/{p['transaction_id']}", headers=H["analyst"]).json()["decision"]["shadow"]
     check("challenger scored in shadow", shadow is not None and shadow["version"] == champion, json.dumps(shadow))

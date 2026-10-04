@@ -270,6 +270,57 @@ JSON rows took 7.4 s on 89k transactions; the grouped, index-only version takes 
 asynchronously from the `decision.made` stream, or use a materialised view in Postgres. Don't update them
 on the scoring path, where one row per hour and rail would become a lock hotspot.
 
+## ADR-19: Risk is computed in USD; payments keep their own currency
+
+**Context.** The QA pass found that `currency` was free text and ignored. ₦46,500 on a card (about $30) was
+scored as $46,500: the hard amount rule declined it, with an expected loss of $5,066. A crypto payment without
+`amount_usd` scored 0.5 BTC as $0.50, which slips under the Travel Rule and the large-transfer points. The
+dashboard summed naira and dollars into one "volume".
+
+**Decision.**
+- `configs/currency.yaml` holds reference rates (units per USD; USD and NGN shipped). The scoring service
+  converts every payment to USD before any scorer sees it. The caller's own `amount_usd` always wins.
+- An unknown currency is rejected (`422 unsupported_currency`), never guessed. Crypto without `amount_usd`
+  is rejected (`amount_usd_required`), because asset prices move by the minute.
+- `transactions.amount` is now USD, so aggregates and filters are currency-safe. `currency` and
+  `amount_local` keep the payment as submitted. The stored payload, and therefore its idempotency hash, is
+  exactly what the caller sent. A one-time migration re-bases older rows.
+- Score responses add `currency`, `amount`, `amount_usd`, `fx_rate` and `expected_loss_local`.
+  `expected_loss` stays USD, so existing integrations keep their meaning.
+- Receipts are reconciled against the local amount and currency. A receipt showing the right digits in the
+  wrong currency is a `mismatch`.
+
+**Why not convert in each scorer.** One boundary means one place to audit the rate that was applied
+(`fx_rate` is in the response and derivable from the row), and the model and scorecards stay currency-blind.
+
+**When to revisit.** The rate is static. A production deployment would refresh it daily from a treasury
+source (for NGN, the CBN closing rate), and record the rate's timestamp on each decision.
+
+## ADR-20: Languages are rendered on read; codes never change
+
+**Context.** Users may be English, Yorùbá, French, Hausa, Igbo or Pidgin speakers. Two kinds of text reach
+them: the console's own labels, and text the API writes (errors, decision reasons, rule and scorecard texts,
+model explanations, the deterministic agent's report).
+
+**Decision.**
+- **gettext style, English as the message id**, in both tiers. `t("Case queue")` in the console;
+  `payguard/locales/<lang>.json` in the API. Untranslated text falls back to English instead of breaking.
+- **The API translates on the way out.** Decisions, explanations and reports are stored in English, as
+  audit records, and translated when read. A template matcher handles generated text such as
+  "Customer activity in the last hour: 3.0 prior transactions", including rows stored before a translation
+  existed. Error `code`s, reason `code`s, rule ids and `required_actions` never change; integrations branch
+  on those.
+- **Which language:** `?lang=`, then the API key's profile (`PATCH /v1/auth/me/preferences`), then
+  `Accept-Language`, then `PAYGUARD_DEFAULT_LOCALE`. Responses carry `Content-Language`. The profile also
+  holds the display currency (USD or NGN), so both follow the user to any browser.
+- **Completeness is tested.** A Vitest test scans the console for every `t()`/`msg()` literal (435
+  strings) and fails if any language misses one or changes a `{placeholder}`. A pytest test does the same
+  for the API catalogs.
+
+**Limits.** The Yorùbá, Hausa, Igbo and Pidgin translations were drafted without a native-speaker review.
+They need one before real users see them. Free-text reports written by the LLM agent stay in the language
+the model wrote them in.
+
 ## What I would do next
 
 - Replace the dev-mode SQLite with Postgres everywhere (compose already does) and add Alembic migrations.

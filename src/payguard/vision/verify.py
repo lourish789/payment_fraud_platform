@@ -30,6 +30,8 @@ CHECKED_ROWS = ["Amount", "Date", "Reference"]
 MAX_PIXELS = 4_000_000
 
 _AMOUNT = re.compile(r"([\d][\d,]*(?:\.\d{1,2})?)")
+_CURRENCY_CODE = re.compile(r"\b([A-Z]{3})\b")
+_CURRENCY_SYMBOL = {"₦": "NGN", "$": "USD", "€": "EUR", "£": "GBP"}
 _DATE = re.compile(r"(\d{1,2})\s*([A-Za-z]{3})\s*(\d{4})\s*(\d{1,2}):?(\d{2})")
 
 DEFAULT_THRESHOLDS = {"ela_low": 0.75, "ela_high": 1.30}  # overwritten by `payguard vision-eval` calibration
@@ -101,6 +103,14 @@ def parse_amount(text: str) -> float | None:
         return None
 
 
+def parse_currency(text: str) -> str | None:
+    """Currency shown next to the amount ("NGN 12,000.00", "₦12,000", "$40.00"), or None if none is legible."""
+    m = _CURRENCY_CODE.search(text.upper().replace("US$", "USD"))
+    if m:
+        return m.group(1)
+    return next((code for sym, code in _CURRENCY_SYMBOL.items() if sym in text), None)
+
+
 def parse_date(text: str) -> datetime | None:
     m = _DATE.search(text)
     if not m:
@@ -164,9 +174,10 @@ class ReceiptVerifier:
         boxes = _Ocr.run(img)
         fields = extract_fields(boxes)
         amount = parse_amount(fields["Amount"]["text"]) if "Amount" in fields else None
+        currency = parse_currency(fields["Amount"]["text"]) if "Amount" in fields else None
         ref = re.sub(r"[^A-Z0-9-]", "", fields["Reference"]["text"].upper()) if "Reference" in fields else None
         when = parse_date(fields["Date"]["text"]) if "Date" in fields else None
-        extracted = {"amount": amount, "reference": ref, "date": when.isoformat() if when else None,
+        extracted = {"amount": amount, "currency": currency, "reference": ref, "date": when.isoformat() if when else None,
                      "raw": {k: v["text"] for k, v in fields.items()}}
         checks: dict = {"ocr_boxes": len(boxes)}
         forensic = forensics(img, fields, self.thresholds)
@@ -186,6 +197,11 @@ class ReceiptVerifier:
             checks["ledger"] = "found" if tx else "not_found"
             if tx is None:
                 return self._result("not_found", extracted, checks, claimed_reference)
+            if currency and tx.get("currency") and currency != str(tx["currency"]).upper():
+                # Same digits, different money: "USD 12,000" is not proof of a ₦12,000 transfer.
+                checks["currency_matches"] = False
+                return self._result("mismatch", extracted, checks, claimed_reference,
+                                    note="receipt shows a different currency than the transaction")
             checks["amount_matches"] = abs(tx["amount"] - amount) <= 0.011
             checks["date_matches"] = when is not None and abs((tx["time"].replace(tzinfo=None) - when).total_seconds()) <= 120
             if not (checks["amount_matches"] and checks["date_matches"]):

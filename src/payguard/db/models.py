@@ -42,6 +42,10 @@ class ApiClient(Base):
     role: Mapped[str] = mapped_column(String(20))  # merchant | analyst | admin
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     key_prefix: Mapped[str | None] = mapped_column(String(12), nullable=True)  # shown in the console, not secret
+    # Profile: language for human-readable API text and the console, and the currency amounts are shown in.
+    # None = not chosen (the request's Accept-Language, then the deployment default, decide).
+    locale: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    display_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -54,7 +58,9 @@ class Transaction(Base):
     payload: Mapped[dict] = mapped_column(JSON)
     payload_hash: Mapped[str] = mapped_column(String(64))
     event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    amount: Mapped[float] = mapped_column(Float)
+    amount: Mapped[float] = mapped_column(Float)  # USD (the scoring base), so aggregates never mix currencies
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)  # as submitted
+    amount_local: Mapped[float | None] = mapped_column(Float, nullable=True)  # as submitted, in `currency`
     bin_key: Mapped[str | None] = mapped_column(String(32), index=True)
     customer_key: Mapped[str | None] = mapped_column(String(32), index=True)
     device_key: Mapped[str | None] = mapped_column(String(32), index=True)

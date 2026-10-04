@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     cc = sub.add_parser("create-client", help="create an API client and print its key (shown once)")
     cc.add_argument("--name", required=True)
     cc.add_argument("--role", required=True, choices=["merchant", "analyst", "admin"])
+    cc.add_argument("--locale", help="profile language: en, fr, yo, ha, ig or pcm (default: not set)")
+    cc.add_argument("--currency", help="profile display currency, e.g. USD or NGN (default: not set)")
     sv = sub.add_parser("serve")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
@@ -121,12 +123,14 @@ def main(argv: list[str] | None = None) -> int:
         _json(Registry(s.models_dir).read())
     elif a.cmd == "create-client":
         from payguard.api.security import create_client
+        from payguard.currency import FxTable
         from payguard.db.session import init_db, make_engine, make_session_factory
 
+        fx = FxTable.load(s.currency_path, s.fx_rates)
         engine = make_engine(s.database_url)
-        init_db(engine)
-        cid, key = create_client(make_session_factory(engine), a.name, a.role)
-        _json({"client_id": cid, "role": a.role, "api_key": key})
+        init_db(engine, fx)
+        cid, key = create_client(make_session_factory(engine), a.name, a.role, a.locale, a.currency, fx)
+        _json({"client_id": cid, "role": a.role, "api_key": key, "locale": a.locale, "currency": a.currency})
     elif a.cmd == "serve":
         import os
 

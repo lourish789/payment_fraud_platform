@@ -1,11 +1,13 @@
 import { RAILS } from "@/api/types";
-import { RAIL_LABEL } from "@/lib/format";
+import { msg, type Params } from "@/i18n";
+import { codeLabel, RAIL_LABEL } from "@/i18n/labels";
 
-export const RAIL_OPTIONS = [{ value: "all", label: "All rails" }, ...RAILS.map((r) => ({ value: r, label: RAIL_LABEL[r] }))];
+type T = (text: string, params?: Params) => string;
 
-export const DECISION_OPTIONS = [
-  { value: "all", label: "All" },
-  { value: "approve", label: "Approve" },
-  { value: "review", label: "Review" },
-  { value: "decline", label: "Decline" },
-];
+export const railOptions = (t: T) => [{ value: "all", label: t("All rails") }, ...RAILS.map((r) => ({ value: r, label: t(RAIL_LABEL[r]) }))];
+
+/** Options for a filter over API codes, with "all" first. */
+export const codeOptions = (t: T, codes: string[], all = msg("All")) =>
+  [{ value: "all", label: t(all) }, ...codes.map((c) => ({ value: c, label: t(codeLabel(c)) }))];
+
+export const decisionOptions = (t: T) => codeOptions(t, ["approve", "review", "decline"]);

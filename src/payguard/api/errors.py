@@ -2,8 +2,8 @@
 
     {"error": {"code": "not_found", "message": "unknown case", "request_id": "…", "details": …}}
 
-`code` is stable and machine-readable; `message` is for humans; `request_id` matches the x-request-id
-response header and the server logs.
+`code` is stable and machine-readable; `message` is for humans, in the caller's language (payguard/i18n.py);
+`request_id` matches the x-request-id response header and the server logs.
 """
 
 from __future__ import annotations
@@ -33,6 +33,13 @@ def not_found(what: str) -> ApiError:
 
 
 def error_body(request: Request, code: str, message: str, details=None) -> dict:
+    from payguard.api.deps import locale_of
+    from payguard.i18n import translate
+
+    try:
+        message = translate(message, locale_of(request))
+    except Exception:  # never let localisation turn an error response into a 500
+        log.exception("could not localise error message")
     err = {"code": code, "message": message, "request_id": getattr(request.state, "request_id", None)}
     if details is not None:
         err["details"] = details

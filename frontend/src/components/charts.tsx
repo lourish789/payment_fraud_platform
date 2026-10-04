@@ -4,7 +4,9 @@ import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { compactNum, dateShort, moneyCompact, RAIL_LABEL } from "@/lib/format";
+import { useT } from "@/i18n";
+import { codeLabel, RAIL_LABEL } from "@/i18n/labels";
+import { compactNum, dateShort, pct, usdCompact } from "@/lib/format";
 
 const TOKENS = ["approve", "review", "decline", "primary", "text-3", "border", "surface", "text",
   "rail-card", "rail-bank_transfer", "rail-mobile_money", "rail-crypto"] as const;
@@ -34,6 +36,7 @@ function tooltipStyle(t: Record<Token, string>) {
 
 export function DecisionsOverTime({ data, height = 260 }: { data: { t: string; approve: number; review: number; decline: number }[]; height?: number }) {
   const t = useTokens();
+  const tr = useT();
   return (
     <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
@@ -42,9 +45,9 @@ export function DecisionsOverTime({ data, height = 260 }: { data: { t: string; a
         <YAxis tickFormatter={compactNum} {...axis(t["text-3"])} />
         <Tooltip labelFormatter={(l) => dateShort(String(l))} {...tooltipStyle(t)} />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Area type="monotone" dataKey="approve" stackId="1" stroke={t.approve} fill={t.approve} fillOpacity={0.25} />
-        <Area type="monotone" dataKey="review" stackId="1" stroke={t.review} fill={t.review} fillOpacity={0.45} />
-        <Area type="monotone" dataKey="decline" stackId="1" stroke={t.decline} fill={t.decline} fillOpacity={0.55} />
+        <Area type="monotone" dataKey="approve" name={tr(codeLabel("approve"))} stackId="1" stroke={t.approve} fill={t.approve} fillOpacity={0.25} />
+        <Area type="monotone" dataKey="review" name={tr(codeLabel("review"))} stackId="1" stroke={t.review} fill={t.review} fillOpacity={0.45} />
+        <Area type="monotone" dataKey="decline" name={tr(codeLabel("decline"))} stackId="1" stroke={t.decline} fill={t.decline} fillOpacity={0.55} />
       </AreaChart>
     </ResponsiveContainer>
   );
@@ -52,32 +55,35 @@ export function DecisionsOverTime({ data, height = 260 }: { data: { t: string; a
 
 export function FlaggedRate({ data, height = 260 }: { data: { t: string; total: number; review: number; decline: number }[]; height?: number }) {
   const t = useTokens();
+  const tr = useT();
   const rows = data.map((d) => ({ t: d.t, rate: d.total ? (d.review + d.decline) / d.total : 0 }));
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={rows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
         <CartesianGrid stroke={t.border} vertical={false} />
         <XAxis dataKey="t" tickFormatter={dateShort} {...axis(t["text-3"])} minTickGap={24} />
-        <YAxis tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} {...axis(t["text-3"])} />
-        <Tooltip labelFormatter={(l) => dateShort(String(l))} formatter={(v: number) => `${(v * 100).toFixed(2)}%`} {...tooltipStyle(t)} />
-        <Line type="monotone" dataKey="rate" name="flag rate" stroke={t.primary} dot={false} strokeWidth={2} />
+        <YAxis tickFormatter={(v) => pct(v, 0)} {...axis(t["text-3"])} />
+        <Tooltip labelFormatter={(l) => dateShort(String(l))} formatter={(v: number) => pct(v, 2)} {...tooltipStyle(t)} />
+        <Line type="monotone" dataKey="rate" name={tr("flag rate")} stroke={t.primary} dot={false} strokeWidth={2} />
       </LineChart>
     </ResponsiveContainer>
   );
 }
 
+/** Amounts are USD from the API, drawn in the viewer's display currency. */
 export function AmountOverTime({ data, height = 260 }: { data: { t: string; amount: number; flagged_amount: number }[]; height?: number }) {
   const t = useTokens();
+  const tr = useT();
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid stroke={t.border} vertical={false} />
         <XAxis dataKey="t" tickFormatter={dateShort} {...axis(t["text-3"])} minTickGap={24} />
-        <YAxis tickFormatter={moneyCompact} {...axis(t["text-3"])} />
-        <Tooltip labelFormatter={(l) => dateShort(String(l))} formatter={(v: number) => moneyCompact(v)} {...tooltipStyle(t)} />
+        <YAxis tickFormatter={usdCompact} {...axis(t["text-3"])} />
+        <Tooltip labelFormatter={(l) => dateShort(String(l))} formatter={(v: number) => usdCompact(v)} {...tooltipStyle(t)} />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Bar dataKey="amount" name="volume" fill={t.primary} fillOpacity={0.35} />
-        <Bar dataKey="flagged_amount" name="flagged" fill={t.decline} fillOpacity={0.7} />
+        <Bar dataKey="amount" name={tr("volume")} fill={t.primary} fillOpacity={0.35} />
+        <Bar dataKey="flagged_amount" name={tr("flagged")} fill={t.decline} fillOpacity={0.7} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -85,12 +91,13 @@ export function AmountOverTime({ data, height = 260 }: { data: { t: string; amou
 
 export function DecisionDonut({ data, height = 200 }: { data: Record<string, number>; height?: number }) {
   const t = useTokens();
-  const rows = (["approve", "review", "decline"] as const).map((k) => ({ name: k, value: data[k] ?? 0 }));
+  const tr = useT();
+  const rows = (["approve", "review", "decline"] as const).map((k) => ({ key: k, name: tr(codeLabel(k)), value: data[k] ?? 0 }));
   return (
     <ResponsiveContainer width="100%" height={height}>
       <PieChart>
         <Pie isAnimationActive={false} data={rows} dataKey="value" nameKey="name" innerRadius="58%" outerRadius="85%" paddingAngle={1} stroke="none">
-          {rows.map((r) => <Cell key={r.name} fill={t[r.name]} />)}
+          {rows.map((r) => <Cell key={r.key} fill={t[r.key]} />)}
         </Pie>
         <Tooltip formatter={(v: number) => v.toLocaleString()} {...tooltipStyle(t)} />
       </PieChart>
@@ -117,7 +124,8 @@ export function HorizontalBars({ data, height, color, format = (v: number) => v.
 
 export function RailVolume({ data, height = 240 }: { data: { rail: string; approve: number; review: number; decline: number }[]; height?: number }) {
   const t = useTokens();
-  const rows = data.map((d) => ({ ...d, name: RAIL_LABEL[d.rail] ?? d.rail }));
+  const tr = useT();
+  const rows = data.map((d) => ({ ...d, name: RAIL_LABEL[d.rail] ? tr(RAIL_LABEL[d.rail]) : d.rail }));
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={rows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
@@ -126,9 +134,9 @@ export function RailVolume({ data, height = 240 }: { data: { rail: string; appro
         <YAxis tickFormatter={compactNum} {...axis(t["text-3"])} />
         <Tooltip formatter={(v: number) => v.toLocaleString()} {...tooltipStyle(t)} />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Bar dataKey="approve" stackId="a" fill={t.approve} fillOpacity={0.6} />
-        <Bar dataKey="review" stackId="a" fill={t.review} />
-        <Bar dataKey="decline" stackId="a" fill={t.decline} />
+        <Bar dataKey="approve" name={tr(codeLabel("approve"))} stackId="a" fill={t.approve} fillOpacity={0.6} />
+        <Bar dataKey="review" name={tr(codeLabel("review"))} stackId="a" fill={t.review} />
+        <Bar dataKey="decline" name={tr(codeLabel("decline"))} stackId="a" fill={t.decline} />
       </BarChart>
     </ResponsiveContainer>
   );

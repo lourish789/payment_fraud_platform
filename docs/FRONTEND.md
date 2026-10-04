@@ -51,6 +51,33 @@ browser ──── same origin ────► FastAPI
 - **Code splitting.** Each page is its own chunk (2-9 KB gzipped). The chart library (113 KB gzipped) loads
   only with a page that draws charts, so merchants never download it.
 
+### Languages and currencies
+
+- **Languages:** English, Français, Yorùbá, Hausa, Igbo and Naijá (Pidgin). Pick one in the top bar or on
+  the sign-in page.
+- **Where the choice comes from:** the key's profile first (`PATCH /v1/auth/me/preferences`), so it follows
+  the user to any browser. Then this browser's last choice, then the browser's language, then English.
+  Changing it in the console saves it to the profile.
+- **How strings are translated.** `src/i18n/` is gettext style: `t("Case queue")` looks up the English text
+  in `locales/<lang>.ts` and falls back to English. API codes (decisions, statuses, verdicts, required
+  actions, error codes) are labelled in `i18n/labels.ts` and translated where they're rendered. The code
+  itself never changes.
+- **Text the server writes** (error messages, decision reasons, explanations, the deterministic agent's
+  report) is translated by the API. Every request sends `Accept-Language`, and switching language
+  refetches the open queries.
+- **Completeness is tested.** `src/i18n/catalog.test.ts` scans the source for every `t()`/`msg()` string
+  literal (435 of them). It fails if a language is missing one, changes a `{placeholder}` or carries an
+  unused entry.
+- **Display currency (USD or NGN):**
+  - `usd()` is for figures the API computes in USD (expected loss, volume, review cost). It converts them
+    with the rates from `GET /v1/meta`.
+  - `money(amount, currency)` shows a payment as it was paid. `<Amount>` adds "≈ ₦…" when the payment's
+    currency differs from the display currency.
+  - Crypto amounts show in the asset ("0.2 BTC ≈ $12,000.00").
+- **Scoring console:** a USD/NGN switch rewrites the example payload, and the result shows the amount as
+  paid, the USD it was scored as, and the rate.
+- Numbers and dates follow the language (`Intl` with en-NG, fr-FR, yo-NG, ha-NG, ig-NG).
+
 ### The admin dashboard
 
 `GET /v1/admin/overview` and `/v1/admin/timeseries` feed one page:

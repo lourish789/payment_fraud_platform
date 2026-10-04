@@ -1,0 +1,51 @@
+# Render Blueprint: API (Docker) + web console (static site) + Postgres.
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo. Render prompts for the `sync: false` values.
+#
+# The console calls the API cross-origin, so the two URLs below must match the names Render actually assigns.
+# If a service name is taken, Render appends a suffix: update VITE_API_URL / PAYGUARD_CORS_ORIGINS to match.
+
+databases:
+  - name: payguard-db
+    plan: free
+    databaseName: payguard
+    user: payguard
+
+services:
+  - type: web
+    name: payguard-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PAYGUARD_DATABASE_URL
+        fromDatabase:
+          name: payguard-db
+          property: connectionString
+      - key: PAYGUARD_CORS_ORIGINS
+        value: '["https://payguard-console.onrender.com"]'
+      # First login: paste this key into the console. Use a long random value (>= 24 chars).
+      - key: PAYGUARD_BOOTSTRAP_ADMIN_KEY
+        sync: false
+      # Optional: enables the Claude investigation agent (falls back to the heuristic agent without it).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # 512 MB free instance: one process.
+      - key: WEB_CONCURRENCY
+        value: "1"
+
+  - type: web
+    name: payguard-console
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_URL
+        value: https://payguard-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

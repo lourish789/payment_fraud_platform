@@ -1,0 +1,392 @@
+{
+  "version": "lgbm-20260930-131236",
+  "created_at": "2026-09-30T13:12:36.198004+00:00",
+  "data": {
+    "source": "IEEE-CIS Fraud Detection (Vesta), HF mirror aliceczr/ieee-fraud-detection",
+    "sha256": {
+      "train_transaction.csv": "3a5c83ab6b3cc13dcabe5ffa9f522307fd5f7f7b6e6f6a60c32284ca6283d642",
+      "train_identity.csv": "b63c725d8377be90a995268d97f347c17d456b95db45807adcf9f59cd603c37c"
+    }
+  },
+  "warmup_window": "2017-12",
+  "train_window": "2018-01-01..2018-03-31",
+  "valid_window": "2018-04",
+  "test_window": "2018-05",
+  "neg_downsample": 0.3,
+  "params": {
+    "objective": "binary",
+    "learning_rate": 0.03,
+    "num_leaves": 63,
+    "min_data_in_leaf": 100,
+    "feature_fraction": 0.5,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "lambda_l2": 1.0,
+    "cat_smooth": 10,
+    "max_cat_to_onehot": 4,
+    "metric": "auc",
+    "verbose": -1,
+    "seed": 7,
+    "num_threads": 4
+  },
+  "best_iteration": 991,
+  "n_features": 144,
+  "report": {
+    "test": {
+      "raw": {
+        "roc_auc": 0.908557148676914,
+        "pr_auc": 0.5269811966034117,
+        "recall_at_1pct_fpr": 0.44540783558124597,
+        "recall_at_5pct_fpr": 0.6432241490044959,
+        "brier": 0.024835200177284324,
+        "ece": 0.023511596091991042,
+        "base_rate": 0.03486107068490697
+      },
+      "calibrated": {
+        "roc_auc": 0.9079073971614716,
+        "pr_auc": 0.5152459436553162,
+        "recall_at_1pct_fpr": 0.4456159280667951,
+        "recall_at_5pct_fpr": 0.6422609521977269,
+        "brier": 0.02248255785345987,
+        "ece": 0.002712769772859687,
+        "base_rate": 0.03486107068490697
+      }
+    },
+    "valid": {
+      "calibrated": {
+        "roc_auc": 0.925421837976929,
+        "pr_auc": 0.5674993901831766,
+        "recall_at_1pct_fpr": 0.4981638250697657,
+        "recall_at_5pct_fpr": 0.688372209545494,
+        "brier": 0.02028960952460553,
+        "ece": 2.569352430427713e-18,
+        "base_rate": 0.03380551072858765
+      }
+    },
+    "policy": {
+      "decline_threshold": 0.7857142857142857,
+      "review_cost": 28.411714822456535,
+      "base_review_cost": 5.0,
+      "review_capacity": 0.03,
+      "decline_target_precision": 0.9
+    },
+    "decisions_test": {
+      "approve_all": {
+        "n": 89326,
+        "review_rate": 0.0,
+        "decline_rate": 0.0,
+        "fraud_recall_count": 0.0,
+        "fraud_recall_amount": 0.0,
+        "decline_precision": null,
+        "review_precision": null,
+        "fraud_loss_total": 477355.9375,
+        "fraud_loss_prevented": 0.0,
+        "review_cost": 0.0,
+        "false_decline_cost": 0.0,
+        "net_savings": 0.0
+      },
+      "rules_as_written": {
+        "n": 89326,
+        "review_rate": 0.16262902178537045,
+        "decline_rate": 0.0,
+        "fraud_recall_count": 0.27970456005138083,
+        "fraud_recall_amount": 0.2136137768004614,
+        "decline_precision": null,
+        "review_precision": 0.05995732085082949,
+        "fraud_loss_total": 477355.9375,
+        "fraud_loss_prevented": 101969.8046875,
+        "review_cost": 72635.0,
+        "false_decline_cost": 0.0,
+        "net_savings": 29334.8046875
+      },
+      "model_only": {
+        "n": 89326,
+        "review_rate": 0.03389830508474576,
+        "decline_rate": 0.011396457918187313,
+        "fraud_recall_count": 0.45536287732819525,
+        "fraud_recall_amount": 0.669678613770254,
+        "decline_precision": 0.8447937131630648,
+        "review_precision": 0.18428005284015853,
+        "fraud_loss_total": 477355.9375,
+        "fraud_loss_prevented": 319675.0625,
+        "review_cost": 15140.0,
+        "false_decline_cost": 1823.1981201171875,
+        "net_savings": 302711.8643798828
+      },
+      "model_plus_all_rules": {
+        "n": 89326,
+        "review_rate": 0.18475024069140003,
+        "decline_rate": 0.011396457918187313,
+        "fraud_recall_count": 0.565189466923571,
+        "fraud_recall_amount": 0.7295536153250425,
+        "decline_precision": 0.8447937131630648,
+        "review_precision": 0.05453553899291038,
+        "fraud_loss_total": 477355.9375,
+        "fraud_loss_prevented": 348256.75,
+        "review_cost": 82515.0,
+        "false_decline_cost": 1823.1981201171875,
+        "net_savings": 263918.5518798828
+      },
+      "model_plus_enforced_rules": {
+        "n": 89326,
+        "review_rate": 0.03389830508474576,
+        "decline_rate": 0.011396457918187313,
+        "fraud_recall_count": 0.45536287732819525,
+        "fraud_recall_amount": 0.669678613770254,
+        "decline_precision": 0.8447937131630648,
+        "review_precision": 0.18428005284015853,
+        "fraud_loss_total": 477355.9375,
+        "fraud_loss_prevented": 319675.0625,
+        "review_cost": 15140.0,
+        "false_decline_cost": 1823.1981201171875,
+        "net_savings": 302711.8643798828
+      }
+    },
+    "rules_valid": {
+      "velocity_burst_bin": {
+        "mode": "shadow",
+        "hit_rate": 0.053517422748191976,
+        "precision": 0.032164395800759436,
+        "marginal_hits": 4363,
+        "marginal_precision": 0.021086408434563372,
+        "marginal_fraud_amount": 9349.7158203125,
+        "marginal_review_cost": 21815.0
+      },
+      "device_farm": {
+        "mode": "shadow",
+        "hit_rate": 0.08334229872691411,
+        "precision": 0.07759609868043603,
+        "marginal_hits": 6391,
+        "marginal_precision": 0.027851666405883272,
+        "marginal_fraud_amount": 7874.3125,
+        "marginal_review_cost": 31955.0
+      },
+      "new_customer_high_amount": {
+        "mode": "shadow",
+        "hit_rate": 0.0023070946147869223,
+        "precision": 0.010362694300518135,
+        "marginal_hits": 132,
+        "marginal_precision": 0.0,
+        "marginal_fraud_amount": 0.0,
+        "marginal_review_cost": 660.0
+      },
+      "amount_spike": {
+        "mode": "shadow",
+        "hit_rate": 0.0031677723985416295,
+        "precision": 0.033962264150943396,
+        "marginal_hits": 204,
+        "marginal_precision": 0.00980392156862745,
+        "marginal_fraud_amount": 2789.800048828125,
+        "marginal_review_cost": 1020.0
+      },
+      "hard_amount_limit": {
+        "mode": "enforce",
+        "hit_rate": 0.0,
+        "precision": null,
+        "marginal_hits": 0,
+        "marginal_precision": null,
+        "marginal_fraud_amount": 0.0,
+        "marginal_review_cost": 0.0
+      }
+    },
+    "slices_test": {
+      "product_code": {
+        "C": {
+          "n": 9478,
+          "fraud_rate": 0.13621017092213547,
+          "roc_auc": 0.9328345167950133,
+          "pr_auc": 0.7491365424879697
+        },
+        "H": {
+          "n": 2578,
+          "fraud_rate": 0.06400310318076027,
+          "roc_auc": 0.8787640181340968,
+          "pr_auc": 0.5302830775658876
+        },
+        "R": {
+          "n": 4201,
+          "fraud_rate": 0.0507022137586289,
+          "roc_auc": 0.9580331369695941,
+          "pr_auc": 0.7788798658582441
+        },
+        "S": {
+          "n": 2989,
+          "fraud_rate": 0.04851120776179324,
+          "roc_auc": 0.8172050050923905,
+          "pr_auc": 0.5550949580114402
+        },
+        "W": {
+          "n": 70080,
+          "fraud_rate": 0.018550228310502282,
+          "roc_auc": 0.8634014639765585,
+          "pr_auc": 0.1564726449048017
+        }
+      },
+      "has_identity": {
+        "no": {
+          "n": 71013,
+          "fraud_rate": 0.019193668764874036,
+          "roc_auc": 0.866783898530489,
+          "pr_auc": 0.1806201866443018
+        },
+        "yes": {
+          "n": 18313,
+          "fraud_rate": 0.09561513678807404,
+          "roc_auc": 0.9264910537087817,
+          "pr_auc": 0.7200216615614039
+        }
+      },
+      "amount_bucket": {
+        "200-1k": {
+          "n": 12739,
+          "fraud_rate": 0.04215401522882487,
+          "roc_auc": 0.9004584375306183,
+          "pr_auc": 0.45339496988904837
+        },
+        "50-200": {
+          "n": 45165,
+          "fraud_rate": 0.02794199047935348,
+          "roc_auc": 0.8953549467015836,
+          "pr_auc": 0.4422228617660857
+        },
+        "<50": {
+          "n": 30118,
+          "fraud_rate": 0.04216747459990703,
+          "roc_auc": 0.9267190017949086,
+          "pr_auc": 0.6202253638635533
+        },
+        ">1k": {
+          "n": 1304,
+          "fraud_rate": 0.03450920245398773,
+          "roc_auc": 0.7545759421057276,
+          "pr_auc": 0.14381124507573145
+        }
+      }
+    },
+    "top_features": [
+      [
+        "sig_V257",
+        46332.32747399807
+      ],
+      [
+        "sig_C1",
+        33400.09947836399
+      ],
+      [
+        "recipient_email_domain",
+        29696.427418231964
+      ],
+      [
+        "sig_C14",
+        28207.92876267433
+      ],
+      [
+        "sig_C13",
+        22914.130860328674
+      ],
+      [
+        "sig_V200",
+        21034.96085047722
+      ],
+      [
+        "card_issuer",
+        19087.879989385605
+      ],
+      [
+        "sig_D2",
+        18787.570144176483
+      ],
+      [
+        "card_bin",
+        18615.80888414383
+      ],
+      [
+        "billing_region",
+        16567.25556886196
+      ],
+      [
+        "sig_V232",
+        14755.898342370987
+      ],
+      [
+        "sig_V308",
+        14454.934856295586
+      ],
+      [
+        "sig_D15",
+        13751.99652338028
+      ],
+      [
+        "sig_V318",
+        13420.989177942276
+      ],
+      [
+        "amount",
+        12956.83842408657
+      ],
+      [
+        "payer_email_domain",
+        12160.899147868156
+      ],
+      [
+        "bin_cnt_30d",
+        11989.225316405296
+      ],
+      [
+        "device_info",
+        10935.799897193909
+      ],
+      [
+        "card_type",
+        10713.820427656174
+      ],
+      [
+        "sig_D4",
+        10391.874413490295
+      ],
+      [
+        "sig_C11",
+        10288.789093852043
+      ],
+      [
+        "sig_C4",
+        9890.533240437508
+      ],
+      [
+        "log_amount",
+        9590.409588932991
+      ],
+      [
+        "sig_C5",
+        9368.865020394325
+      ],
+      [
+        "sig_C6",
+        9198.25251698494
+      ]
+    ],
+    "ablations_test": {
+      "full": {
+        "roc_auc": 0.908557148676914,
+        "pr_auc": 0.5269811966034117,
+        "recall_at_1pct_fpr": 0.44540783558124597
+      },
+      "no_streaming": {
+        "roc_auc": 0.9081664075184885,
+        "pr_auc": 0.5234355179960138,
+        "recall_at_1pct_fpr": 0.44669235709698135
+      },
+      "no_vendor_signals": {
+        "roc_auc": 0.8351861243545916,
+        "pr_auc": 0.24441104309446982,
+        "recall_at_1pct_fpr": 0.1936416184971098
+      },
+      "request_only": {
+        "roc_auc": 0.8242839711108114,
+        "pr_auc": 0.22221472417344526,
+        "recall_at_1pct_fpr": 0.1750160565189467
+      }
+    }
+  },
+  "train_seconds": 300.2
+}

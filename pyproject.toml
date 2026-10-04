@@ -38,6 +38,9 @@ payguard = "payguard.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+payguard = ["locales/*.json"]  # API language catalogs (payguard/i18n.py)
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

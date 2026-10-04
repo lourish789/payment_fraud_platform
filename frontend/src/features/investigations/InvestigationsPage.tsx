@@ -2,12 +2,15 @@ import { Link } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { investigations } from "@/api/endpoints";
 import { Async, Badge, Card, Empty, PageHeader, Pagination, Select } from "@/components/ui";
+import { useT } from "@/i18n";
 import { dateTime, pct } from "@/lib/format";
 import { opt, useUrlState } from "@/lib/useUrlState";
+import { codeOptions } from "@/features/options";
 
 const LIMIT = 25;
 
 export function InvestigationsPage() {
+  const t = useT();
   const { values, set, offset, setOffset } = useUrlState({ status: "all", recommendation: "all" });
   const q = useQuery({
     queryKey: ["investigations", values, offset],
@@ -17,20 +20,20 @@ export function InvestigationsPage() {
   });
   return (
     <>
-      <PageHeader title="Investigations" description="Agent reports across all cases. Each one cites the tool calls its evidence came from." />
-      <Card flush title={q.data ? `${q.data.total.toLocaleString()} investigations` : "Investigations"}
+      <PageHeader title={t("Investigations")} description={t("Agent reports across all cases. Each one cites the tool calls its evidence came from.")} />
+      <Card flush title={q.data ? t("Investigations: {n}", { n: q.data.total.toLocaleString() }) : t("Investigations")}
         actions={<div className="row">
-          <Select label="Status" value={values.status} onChange={(v) => set("status", v)}
-            options={["all", "queued", "running", "done", "failed"].map((v) => ({ value: v, label: v }))} />
-          <Select label="Recommendation" value={values.recommendation} onChange={(v) => set("recommendation", v)}
-            options={["all", "fraud", "legit", "escalate"].map((v) => ({ value: v, label: v }))} />
+          <Select label={t("Status")} value={values.status} onChange={(v) => set("status", v)}
+            options={codeOptions(t, ["queued", "running", "done", "failed"])} />
+          <Select label={t("Recommendation")} value={values.recommendation} onChange={(v) => set("recommendation", v)}
+            options={codeOptions(t, ["fraud", "legit", "escalate"])} />
         </div>}>
         <Async query={q}>
-          {(page) => page.items.length === 0 ? <Empty>No investigations yet.</Empty> : (
+          {(page) => page.items.length === 0 ? <Empty>{t("No investigations yet.")}</Empty> : (
             <>
               <div className="table-wrap"><table className="table">
-                <thead><tr><th>Case</th><th>Status</th><th>Recommendation</th><th className="num">Confidence</th><th>Summary</th>
-                  <th>Provider</th><th className="num">Tokens</th><th>Finished</th></tr></thead>
+                <thead><tr><th>{t("Case")}</th><th>{t("Status")}</th><th>{t("Recommendation")}</th><th className="num">{t("Confidence")}</th><th>{t("Summary")}</th>
+                  <th>{t("Provider")}</th><th className="num">{t("Tokens")}</th><th>{t("Finished")}</th></tr></thead>
                 <tbody>
                   {page.items.map((i) => (
                     <tr key={i.investigation_id}>

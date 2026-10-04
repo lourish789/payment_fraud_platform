@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from fastapi import Depends, Header, Query, Request
 
+from payguard import i18n
 from payguard import observability as obs
 from payguard.api.errors import ApiError
 from payguard.api.security import Principal
@@ -13,6 +14,21 @@ from payguard.api.security import Principal
 
 def container(request: Request):
     return request.app.state.pg
+
+
+def locale_of(request: Request) -> str:
+    """Language for this response: ?lang=, else the caller's profile, else Accept-Language, else the default."""
+    explicit = i18n.normalize(request.query_params.get("lang"))
+    if explicit:
+        return explicit
+    p = getattr(request.state, "principal", None)
+    if p is not None and p.locale:
+        return p.locale
+    header = i18n.negotiate(request.headers.get("accept-language"))
+    if header:
+        return header
+    c = getattr(request.app.state, "pg", None)
+    return (i18n.normalize(c.settings.default_locale) if c else None) or i18n.DEFAULT
 
 
 def principal(request: Request, authorization: str = Header(default="")) -> Principal:

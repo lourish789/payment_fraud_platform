@@ -23,12 +23,39 @@ class Page(BaseModel, Generic[T]):
     offset: int
 
 
-# ---- auth ----------------------------------------------------------------------------------------
+# ---- auth & profile ------------------------------------------------------------------------------
+class Preferences(BaseModel):
+    locale: Optional[str] = Field(None, description="Language of human-readable text: en, fr, yo, ha, ig, pcm. "
+                                                    "null = follow Accept-Language")
+    currency: Optional[str] = Field(None, description="Currency the console shows amounts in, e.g. USD or NGN")
+
+
 class Me(BaseModel):
     client_id: str
     name: str
     role: Role
     permissions: list[str] = Field(description="Capabilities the console uses to show or hide features")
+    preferences: Preferences = Preferences()
+    locale: str = Field("en", description="The language this response was rendered in")
+
+
+class LocaleOut(BaseModel):
+    code: str
+    name: str
+
+
+class CurrencyInfo(BaseModel):
+    base: str
+    rates: dict[str, float] = Field(description="Units of each currency per 1 USD")
+    display: list[str]
+    as_of: Optional[str] = None
+    source: Optional[str] = None
+
+
+class Meta(BaseModel):
+    locales: list[LocaleOut]
+    default_locale: str
+    currencies: CurrencyInfo
 
 
 # ---- transactions & decisions ----------------------------------------------------------------------
@@ -54,8 +81,9 @@ class LabelOut(BaseModel):
 class TransactionSummary(BaseModel):
     transaction_id: str
     rail: str
-    amount: float
-    currency: Optional[str] = None
+    amount: float = Field(description="USD, the currency risk is computed in")
+    currency: Optional[str] = Field(None, description="Currency as submitted")
+    amount_local: Optional[float] = Field(None, description="Amount as submitted, in `currency`")
     event_time: datetime
     decision: Optional[str] = None
     fraud_probability: Optional[float] = None
@@ -65,9 +93,16 @@ class TransactionSummary(BaseModel):
     created_at: datetime
 
 
+class Money(BaseModel):
+    currency: str = Field(description="As submitted")
+    amount: float = Field(description="As submitted, in `currency`")
+    amount_usd: float = Field(description="What risk was computed on")
+
+
 class TransactionDetail(BaseModel):
     transaction_id: str
     rail: str
+    money: Optional[Money] = None
     transaction: dict = Field(description="The payload exactly as submitted")
     decision: Optional[DecisionOut] = None
     label: Optional[LabelOut] = None
@@ -88,7 +123,9 @@ class CaseSummary(BaseModel):
     status: str
     decision: str
     priority: float = Field(description="Expected loss in USD; the queue is ordered by it")
-    amount: float
+    amount: float = Field(description="USD")
+    currency: Optional[str] = None
+    amount_local: Optional[float] = None
     resolution: Optional[str] = None
     created_at: datetime
     agent: Optional[AgentSummary] = None
@@ -135,6 +172,7 @@ class CaseDetail(BaseModel):
     created_at: datetime
     transaction_id: str
     rail: str
+    money: Optional[Money] = None
     transaction: dict
     model: Optional[DecisionOut] = None
     explanation: Optional[list[dict]] = None
@@ -155,6 +193,9 @@ class Queued(BaseModel):
 
 class Accepted(BaseModel):
     accepted: int
+    unknown: list[str] = Field(default_factory=list,
+                               description="transaction_ids we have no record of; not stored (at most 100 listed)")
+    unknown_count: int = 0
 
 
 # ---- admin -------------------------------------------------------------------------------------------
@@ -166,6 +207,7 @@ class ClientOut(BaseModel):
     key_prefix: Optional[str] = None
     created_at: datetime
     revoked_at: Optional[datetime] = None
+    preferences: Preferences = Preferences()
 
 
 class ClientCreated(ClientOut):

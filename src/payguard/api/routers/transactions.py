@@ -5,10 +5,10 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from payguard.api.deps import PageParams, container, page_params, require
+from payguard.api.deps import PageParams, container, locale_of, page_params, require
 from payguard.api.dto import Page, TransactionDetail, TransactionSummary
 from payguard.api.errors import not_found
-from payguard.services import queries
+from payguard.services import localize, queries
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 Rail = Literal["card", "bank_transfer", "mobile_money", "crypto"]
@@ -34,4 +34,4 @@ def get_transaction(transaction_id: str, request: Request, _=Depends(require("an
     tx = queries.get_transaction(container(request).session_factory, transaction_id)
     if tx is None:
         raise not_found("transaction")
-    return tx
+    return {**tx, "decision": localize.decision(tx["decision"], locale_of(request))}

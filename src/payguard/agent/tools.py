@@ -98,7 +98,8 @@ class InvestigationTools:
             details = {k: p.get(k) for k in RAIL_DETAIL_FIELDS[rail]}
         return _safe({
             "case_id": ctx.case_id, "transaction_id": tx.id, "rail": rail, "event_time": ctx.as_of.isoformat(),
-            "amount": tx.amount, "currency": p.get("currency"), "amount_usd": p.get("amount_usd"),
+            "amount": tx.amount_local if tx.amount_local is not None else p.get("amount", tx.amount),
+            "currency": tx.currency or p.get("currency"), "amount_usd": tx.amount,
             "details": details, "device": p.get("device"), "required_actions": dec.actions or [],
             "model": {"decision": dec.decision, "fraud_probability": dec.fraud_probability,
                       "expected_loss": dec.expected_loss, "model_version": dec.model_version},
@@ -151,10 +152,10 @@ class InvestigationTools:
                              .where(base).order_by(Transaction.event_time.desc()).limit(limit)).all()
             labels = self._labels_known(s, [r[0] for r in rows], ctx)
         recent = [{"transaction_id": r[0], "hours_before": round((ctx.as_of - _utc(r[1])).total_seconds() / 3600, 2),
-                   "amount": r[2], "decision": r[3], "fraud_probability": r[4],
+                   "amount_usd": r[2], "decision": r[3], "fraud_probability": r[4],
                    "confirmed_label": None if r[0] not in labels else ("fraud" if labels[r[0]] else "legit")}
                   for r in rows]
-        return _safe({"entity": entity, "prior_transactions": n, "prior_amount_total": total,
+        return _safe({"entity": entity, "prior_transactions": n, "prior_amount_total_usd": total,
                       "confirmed_fraud_in_recent": sum(1 for r in recent if r["confirmed_label"] == "fraud"),
                       "confirmed_legit_in_recent": sum(1 for r in recent if r["confirmed_label"] == "legit"),
                       "recent": recent})

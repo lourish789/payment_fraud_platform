@@ -13,11 +13,25 @@ export interface Page<T> {
   offset: number;
 }
 
+export interface Preferences {
+  locale: string | null; // null = not chosen
+  currency: string | null;
+}
+
 export interface Me {
   client_id: string;
   name: string;
   role: Role;
   permissions: string[];
+  preferences: Preferences;
+  locale: string; // the language the server rendered this response in
+}
+
+/** One payment's money: as submitted, and the USD amount risk was computed on. */
+export interface Money {
+  currency: string;
+  amount: number;
+  amount_usd: number;
 }
 
 export interface ReasonCode {
@@ -40,6 +54,12 @@ export interface ScoreResponse {
   degraded: boolean;
   rail: Rail;
   required_actions: string[];
+  // expected_loss is USD; the rest describe the payment's own currency
+  currency: string | null;
+  amount: number | null;
+  amount_usd: number | null;
+  fx_rate: number | null;
+  expected_loss_local: number | null;
 }
 
 export interface DecisionOut {
@@ -58,8 +78,9 @@ export interface DecisionOut {
 export interface TransactionSummary {
   transaction_id: string;
   rail: Rail;
-  amount: number;
+  amount: number; // USD
   currency: string | null;
+  amount_local: number | null; // as submitted, in `currency`
   event_time: string;
   decision: Decision | null;
   fraud_probability: number | null;
@@ -72,6 +93,7 @@ export interface TransactionSummary {
 export interface TransactionDetail {
   transaction_id: string;
   rail: Rail;
+  money: Money | null;
   transaction: Record<string, unknown>;
   decision: DecisionOut | null;
   label: { is_fraud: boolean; source: string; created_at: string | null } | null;
@@ -90,8 +112,10 @@ export interface CaseSummary {
   rail: Rail;
   status: "open" | "resolved";
   decision: Decision;
-  priority: number;
-  amount: number;
+  priority: number; // expected loss, USD
+  amount: number; // USD
+  currency: string | null;
+  amount_local: number | null;
   resolution: "fraud" | "legit" | null;
   created_at: string;
   agent: AgentSummary | null;
@@ -169,6 +193,7 @@ export interface CaseDetail {
   created_at: string;
   transaction_id: string;
   rail: Rail;
+  money: Money | null;
   transaction: Record<string, unknown>;
   model: DecisionOut | null;
   explanation: Explanation[] | null;
@@ -361,6 +386,7 @@ export interface ApiClient {
   key_prefix: string | null;
   created_at: string;
   revoked_at: string | null;
+  preferences: Preferences;
 }
 
 export interface ApiClientCreated extends ApiClient {

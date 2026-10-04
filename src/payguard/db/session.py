@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import threading
 
 from sqlalchemy import create_engine, event, inspect, text
@@ -11,6 +12,10 @@ from payguard.db.models import Base
 
 
 def make_engine(url: str) -> Engine:
+    # Hosted Postgres (Render, Heroku) hands out postgres:// URLs; SQLAlchemy needs the psycopg 3 driver named.
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            url = "postgresql+psycopg://" + url[len(prefix):]
     if url.startswith("sqlite"):
         engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
 
@@ -76,18 +81,45 @@ _ADDED_COLUMNS = [
     ("decisions", "actions", "JSON"),
     ("api_clients", "key_prefix", "VARCHAR(12)"),
     ("api_clients", "revoked_at", "TIMESTAMP"),
+    ("api_clients", "locale", "VARCHAR(10)"),
+    ("api_clients", "display_currency", "VARCHAR(10)"),
+    ("transactions", "currency", "VARCHAR(10)"),
+    ("transactions", "amount_local", "FLOAT"),
 ]
 
 
-def init_db(engine: Engine) -> None:
+def _backfill_currency(conn, dialect: str, fx) -> None:
+    """Rows written before transactions.currency existed stored the amount as submitted, in whatever currency.
+    Record that currency and the original amount, then re-base `amount` to USD so aggregates (dashboard
+    volume, min_amount filters, entity spend) stop adding naira to dollars."""
+    cur = "json_extract(payload, '$.currency')" if dialect == "sqlite" else "(payload::json ->> 'currency')"
+    conn.execute(text(f"UPDATE transactions SET currency = UPPER(COALESCE(NULLIF({cur}, ''), 'USD')), "
+                      "amount_local = amount WHERE currency IS NULL"))
+    # Card payloads have no amount_usd, so only non-USD cards need a look; any rail row may carry amount_usd.
+    rows = conn.execute(text("SELECT id, amount_local, currency, payload FROM transactions "
+                             "WHERE currency <> 'USD' OR rail <> 'card'")).all()
+    for tid, amount, currency, payload in rows:
+        payload = json.loads(payload) if isinstance(payload, str) else payload
+        usd = payload.get("amount_usd") if payload else None
+        if usd is None and fx is not None and fx.supports(currency):
+            usd = fx.to_usd(amount, currency)
+        if usd is not None:
+            conn.execute(text("UPDATE transactions SET amount = :usd WHERE id = :id"), {"usd": float(usd), "id": tid})
+
+
+def init_db(engine: Engine, fx=None) -> None:
     # Dev convenience: create_all plus additive column migrations. A production deploy would run
     # Alembic migrations instead.
     Base.metadata.create_all(engine)
     insp = inspect(engine)
     with engine.begin() as conn:
+        added = set()
         for table, column, ddl in _ADDED_COLUMNS:
             if column not in {c["name"] for c in insp.get_columns(table)}:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+                added.add((table, column))
+        if ("transactions", "currency") in added:
+            _backfill_currency(conn, engine.dialect.name, fx)
         for table in Base.metadata.sorted_tables:  # indexes added after a table was first created
             for index in table.indexes:
                 index.create(conn, checkfirst=True)

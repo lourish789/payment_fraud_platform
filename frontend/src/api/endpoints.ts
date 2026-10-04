@@ -1,5 +1,5 @@
 // One function per backend endpoint, grouped by resource. Pages never build URLs themselves.
-import { get, post, request } from "./client";
+import { get, patch, post, request } from "./client";
 import type {
   ApiClient,
   ApiClientCreated,
@@ -14,6 +14,7 @@ import type {
   ModelMetadata,
   Overview,
   Page,
+  Preferences,
   RailOut,
   ReceiptDetail,
   ReceiptResult,
@@ -38,6 +39,8 @@ export type Anchor = "latest_event" | "now";
 
 export const auth = {
   me: (key?: string) => request<Me>("GET", "/v1/auth/me", { key }),
+  /** Omitted fields are unchanged; null clears a preference. */
+  setPreferences: (p: Partial<Preferences>) => patch<Me>("/v1/auth/me/preferences", p),
 };
 
 export const scoring = {
@@ -107,7 +110,8 @@ export const admin = {
   events: (q: Paging & { topic?: string; pending?: boolean }) => get<EventsReport>("/v1/admin/events", q),
   system: () => get<SystemInfo>("/v1/admin/system"),
   clients: (q: Paging & { role?: string; active?: boolean }) => get<Page<ApiClient>>("/v1/admin/clients", q),
-  createClient: (name: string, role: Role) => post<ApiClientCreated>("/v1/admin/clients", { name, role }),
+  createClient: (name: string, role: Role, prefs: Partial<Preferences> = {}) =>
+    post<ApiClientCreated>("/v1/admin/clients", { name, role, locale: prefs.locale || null, currency: prefs.currency || null }),
   revokeClient: (id: string) => post<ApiClient>(`/v1/admin/clients/${encodeURIComponent(id)}/revoke`),
   audit: (q: Paging & { action?: string; actor_id?: string }) => get<Page<AuditEntry>>("/v1/admin/audit", q),
 };

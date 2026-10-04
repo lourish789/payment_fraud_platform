@@ -19,9 +19,11 @@ from starlette.concurrency import run_in_threadpool
 from payguard import __version__
 from payguard import observability as obs
 from payguard.api import errors
+from payguard.api.deps import locale_of
 from payguard.agent.runner import Provider, make_provider
-from payguard.api.security import Authenticator, RedisTokenBucket, TokenBucket
+from payguard.api.security import Authenticator, RedisTokenBucket, TokenBucket, ensure_admin
 from payguard.config import Settings, get_settings
+from payguard.currency import FxTable
 from payguard.db.session import init_db, make_engine, make_session_factory
 from payguard.events import EventBus, make_bus
 from payguard.features.pipeline import FeaturePipeline
@@ -51,6 +53,7 @@ class Container:
     workers: WorkerPool | None
     verifier: ReceiptVerifier
     explainer: Explainer
+    fx: FxTable
 
 
 def build_scorers(settings: Settings, store: FeatureStore, models: ModelHolder, rules: RuleEngine) -> dict:
@@ -87,9 +90,12 @@ def build_scorers(settings: Settings, store: FeatureStore, models: ModelHolder, 
 
 def build_container(settings: Settings, store: FeatureStore | None = None, bus: EventBus | None = None,
                     provider: Provider | None = None, start_workers: bool | None = None) -> Container:
+    fx = FxTable.load(settings.currency_path, settings.fx_rates)
     engine = make_engine(settings.database_url)
-    init_db(engine)
+    init_db(engine, fx)
     sf = make_session_factory(engine)
+    if settings.bootstrap_admin_key and ensure_admin(sf, settings.bootstrap_admin_key):
+        log.info("bootstrap admin client created from PAYGUARD_BOOTSTRAP_ADMIN_KEY")
     store = store or make_store(settings.redis_url)
     if settings.online_snapshot and isinstance(store, InMemoryFeatureStore) and len(store) == 0:
         header = load_snapshot(store, settings.online_snapshot)
@@ -110,9 +116,9 @@ def build_container(settings: Settings, store: FeatureStore | None = None, bus: 
     run_workers = settings.run_workers_in_process if start_workers is None else start_workers
     workers = WorkerPool(sf, bus, provider, explainer, settings.agent_auto_investigate) if run_workers else None
     return Container(settings, sf, store, bus, models, rules,
-                     ScoringService(scorers, sf),
+                     ScoringService(scorers, sf, fx),
                      Authenticator(sf), limiter, provider, workers,
-                     ReceiptVerifier(settings.artifacts_dir / "vision" / "thresholds.json"), explainer)
+                     ReceiptVerifier(settings.artifacts_dir / "vision" / "thresholds.json"), explainer, fx)
 
 
 def create_app(container: Container | None = None) -> FastAPI:
@@ -136,8 +142,9 @@ def create_app(container: Container | None = None) -> FastAPI:
     errors.install(app)
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
-                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
-                           expose_headers=["X-Request-Id", "Retry-After"])
+                           allow_methods=["GET", "POST", "PATCH"],
+                           allow_headers=["Authorization", "Content-Type", "X-Request-Id", "Accept-Language"],
+                           expose_headers=["X-Request-Id", "Retry-After", "Content-Language"])
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
@@ -153,6 +160,9 @@ def create_app(container: Container | None = None) -> FastAPI:
         obs.HTTP_LATENCY.labels(getattr(route, "path", "unmatched"), request.method, response.status_code).observe(
             time.perf_counter() - t0)
         response.headers["x-request-id"] = rid
+        if request.url.path.startswith("/v1/"):
+            response.headers["Content-Language"] = locale_of(request)
+            response.headers.setdefault("Vary", "Accept-Language")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response

@@ -27,6 +27,11 @@ the **OFAC SDN sanctioned-address list**.
   a merchant scoring console, and an admin dashboard that reflects the whole system (traffic and decisions
   per rail, the queue, live precision from labels, the agent, the event pipeline, models, rules, API keys,
   audit log, component health). Role-aware: each key sees only what its API calls are allowed to serve.
+- **Currencies and languages.** Payments can arrive in naira or dollars (or any currency in
+  `configs/currency.yaml`). Risk is computed in USD and amounts are kept as paid; the console shows money in
+  USD or NGN. The console and the API's human-readable text (errors, decision reasons, explanations) are in
+  English, French, Yorùbá, Hausa, Igbo and Nigerian Pidgin, chosen per request or saved on the user's
+  profile ([ADR-19, ADR-20](docs/DECISIONS.md)).
 
 ## Results
 
@@ -45,7 +50,7 @@ regenerated from artifacts by `python -m payguard.report`. Full tables are in [d
 | **Receipt verification** | With ledger reconciliation: 100% of 4 forgery types caught, 100% of genuine receipts verified (synthetic set). Pixel forensics alone: 33–60% |
 | **Crypto transaction model** | Elliptic++, strict time-ordered split: illicit F1 0.723, precision 98%. F1 **0.87 before** a dark-market shutdown and **0.03 after**, for every model including Random Forest and graph features |
 | **Crypto counterparty intelligence** | Block threshold: flags 3.9% of test transactions at 89% precision and 60% recall. Address clustering through the scored transaction's co-inputs raises sender coverage from 27.5% to 35.9% |
-| **All rails, end to end** | `scripts/smoke_test.py`: 48/48 live checks. A real OFAC address is blocked on withdrawal and frozen on deposit; a real illicit Elliptic transaction is flagged and a licit one approved |
+| **All rails, end to end** | `scripts/smoke_test.py`: 54/54 live checks, including NGN payments and translated errors. A real OFAC address is blocked on withdrawal and frozen on deposit; a real illicit Elliptic transaction is flagged and a licit one approved |
 
 Four things the card evaluation showed that I did not expect, and what I did about each:
 
@@ -121,7 +126,7 @@ flowchart LR
 | Agent safety | Read-only tools, no label leakage, sanitised untrusted text, grounded citations | `agent/` |
 | Abuse | Hashed API keys, roles, token-bucket rate limits (Redis-backed for multiple replicas) | `api/security.py` |
 
-Design rationale and trade-offs: [docs/DECISIONS.md](docs/DECISIONS.md).
+Design rationale and trade-offs: [docs/DECISIONS.md](docs/DECISIONS.md). Latest QA pass: [docs/QA_REPORT.md](docs/QA_REPORT.md).
 All numbers: [docs/EVALUATION.md](docs/EVALUATION.md). Operations: [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Quick start
@@ -139,7 +144,7 @@ payguard crypto-intel  # address/entity intelligence store + counterparty-risk c
 
 payguard create-client --name shop --role merchant    # prints an API key (shown once)
 payguard create-client --name ops  --role analyst
-payguard create-client --name me   --role admin
+payguard create-client --name me   --role admin --locale yo --currency NGN   # optional profile
 cd frontend && npm ci && npm run build && cd ..        # web console -> frontend/dist
 payguard serve                                         # console at http://127.0.0.1:8000, API docs at /docs
 ```
@@ -167,7 +172,7 @@ payguard vision-eval
 payguard drift-demo
 payguard loadtest --key $KEY --n 2000 --concurrency 4 --label "API only"   # against a running `payguard serve`
 python -m payguard.report  # regenerates docs/EVALUATION.md from artifacts/
-pytest                     # 50 tests (-m "not slow" skips the OCR test)
+pytest                     # 63 tests (-m "not slow" skips the OCR test)
 cd frontend && npm test && npm run typecheck   # console unit tests + strict TypeScript
 ```
 
@@ -187,6 +192,21 @@ python scripts/smoke_test.py --url http://127.0.0.1:8020 --merchant-key $M --ana
 Full stack (Postgres, Redis and separate worker processes): `docker compose up` (see the header of
 `docker-compose.yml`).
 
+## Deploy on Render
+
+`render.yaml` is a Blueprint for three resources: the API as a Docker web service, the console as a static site, and a
+free Postgres. In the Render dashboard choose **New -> Blueprint** and pick this repo. Render then asks for:
+
+- `PAYGUARD_BOOTSTRAP_ADMIN_KEY`: a long random string (at least 24 characters). On startup the API creates an admin
+  client with this key. Paste it into the console's login screen.
+- `ANTHROPIC_API_KEY` (optional): turns on the Claude investigation agent. Without it the heuristic agent runs.
+
+The console is built with `VITE_API_URL=https://payguard-api.onrender.com`, and the API allows that origin through
+`PAYGUARD_CORS_ORIGINS`. If Render gives either service a different hostname, update both values. The image ships the
+champion card model from `deploy/bundle/`. The 500 MB crypto intel store is not included, so the crypto rail runs
+on sanctions screening and its behavioural scorecard. Free instances sleep when idle, and Render's free Postgres expires
+after 30 days.
+
 ## API
 
 Every route is versioned under `/v1`, declares a typed response model (complete OpenAPI at `/docs`), is
@@ -194,9 +214,20 @@ role-gated, and returns errors in one envelope: `{"error": {"code", "message", "
 where `request_id` matches the `x-request-id` header and the logs. Lists are paginated
 (`{items, total, limit, offset}`) and filterable.
 
+Money and language:
+- **Money.** Send `amount` in its own `currency` (`USD` or `NGN`; crypto uses the asset ticker and must send
+  `amount_usd`). Risk is computed in USD. Responses return `amount_usd`, the applied `fx_rate`,
+  `expected_loss` (USD) and `expected_loss_local`. Listings report `amount` in USD plus `currency` and
+  `amount_local` as paid.
+- **Language.** Human-readable text follows `?lang=`, then the key's profile language, then
+  `Accept-Language`. Codes (`error.code`, reason codes, rule ids, `required_actions`) never change with
+  the language. Every response says which language it used in `Content-Language`.
+
 | Method | Path | Role | Purpose |
 |---|---|---|---|
-| GET | `/v1/auth/me` | any | Identity, role and permissions of the calling key (the console's login) |
+| GET | `/v1/auth/me` | any | Identity, role, permissions and preferences of the calling key (the console's login) |
+| PATCH | `/v1/auth/me/preferences` | any | The key's language (`en`, `fr`, `yo`, `ha`, `ig`, `pcm`) and display currency (`USD`, `NGN`); audited |
+| GET | `/v1/meta` | - | Supported languages, currencies and reference FX rates (public: the sign-in page needs it) |
 | POST | `/v1/payments/score` | merchant | Any rail (`rail`: card, bank_transfer, mobile_money, crypto): decision, risk, reasons, `required_actions` (idempotent) |
 | POST | `/v1/transactions/score` | merchant | Card-only endpoint (same pipeline), kept for compatibility |
 | GET | `/v1/transactions` | analyst | Paginated; filter by rail, decision, label, id prefix, time, amount, client |
@@ -240,12 +271,18 @@ src/payguard/
 frontend/      web console: React + TypeScript + Vite (src/api typed client, src/features one folder per page)
 scripts/       smoke_test.py: end-to-end check of every endpoint with real sample transactions
 configs/       rules.yaml, policy.yaml, prometheus.yml, rails/{bank_transfer,mobile_money,crypto}.yaml
-docs/          DECISIONS.md, EVALUATION.md (generated), RUNBOOK.md, PAYMENT_RAILS.md, FRONTEND.md
-tests/         50 tests: admin API + error envelope + console serving, feature math + stationarity, store parity, API contracts, concurrency, agent loop + safety,
+docs/          DECISIONS.md, EVALUATION.md (generated), RUNBOOK.md, PAYMENT_RAILS.md, FRONTEND.md, QA_REPORT.md
+tests/         63 tests: currencies and languages, admin API + error envelope + console serving, feature math + stationarity, store parity, API contracts, concurrency, agent loop + safety,
                vision, every payment rail (sanctions, mule fan-in, SIM swap, pass-through, Travel Rule)
 ```
 
 ## Honest limitations
+
+- **Translations need a native-speaker review.** French is solid. The Yorùbá, Hausa, Igbo and Pidgin
+  catalogs were drafted without a native-speaker review and should get one before real users rely on them.
+  Free-text reports written by the LLM agent are not translated.
+- **FX rates are static reference rates** in `configs/currency.yaml`, not a live feed. Callers that convert
+  at their own rate should send `amount_usd`, which always wins.
 
 - **The console signs in with API keys, not SSO.** Keys live in `sessionStorage` under a strict CSP; a
   production deployment for a bank would put OIDC SSO with short-lived sessions in front (see

@@ -21,11 +21,23 @@ export class ApiError extends Error {
 type QueryValue = string | number | boolean | null | undefined;
 type Query = object; // a flat object of QueryValue fields; undefined/null/"" are dropped
 
+// Empty (the default) means same origin: FastAPI serves the console, or Vite proxies in dev. Set VITE_API_URL at
+// build time when the console is hosted separately from the API (e.g. a static site on Render).
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
+
+export const apiUrl = (path: string) => API_BASE + path;
+
 let apiKey: string | null = null;
+let locale = "en";
 let onUnauthorized: () => void = () => {};
 
 export function setApiKey(key: string | null) {
   apiKey = key;
+}
+
+/** The console language: sent as Accept-Language so the API writes its human-readable text in it. */
+export function setLocaleHeader(l: string) {
+  locale = l;
 }
 
 export function setUnauthorizedHandler(fn: () => void) {
@@ -59,11 +71,11 @@ export async function parseError(res: Response): Promise<ApiError> {
 }
 
 export async function request<T>(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PATCH",
   path: string,
   opts: { query?: Query; body?: unknown; form?: FormData; key?: string } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { "Accept-Language": locale };
   const key = opts.key ?? apiKey;
   if (key) headers.Authorization = `Bearer ${key}`;
   let body: BodyInit | undefined;
@@ -72,7 +84,7 @@ export async function request<T>(
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(opts.body);
   }
-  const res = await fetch(buildUrl(path, opts.query), { method, headers, body });
+  const res = await fetch(apiUrl(buildUrl(path, opts.query)), { method, headers, body });
   if (!res.ok) {
     const err = await parseError(res);
     if (res.status === 401 && !opts.key) onUnauthorized();
@@ -83,3 +95,4 @@ export async function request<T>(
 
 export const get = <T>(path: string, query?: Query) => request<T>("GET", path, { query });
 export const post = <T>(path: string, body?: unknown) => request<T>("POST", path, { body });
+export const patch = <T>(path: string, body?: unknown) => request<T>("PATCH", path, { body });

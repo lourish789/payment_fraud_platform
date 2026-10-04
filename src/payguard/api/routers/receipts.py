@@ -6,12 +6,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
 from payguard import observability as obs
-from payguard.api.deps import PageParams, container, page_params, require, require_any
+from payguard.api.deps import PageParams, container, locale_of, page_params, require, require_any
 from payguard.api.dto import Page, ReceiptOut, ReceiptSummary
 from payguard.api.errors import ApiError, not_found
 from payguard.db.models import Case, Receipt, Transaction
 from payguard.db.session import write_guard
-from payguard.services import queries
+from payguard.services import localize, queries
 
 router = APIRouter(prefix="/receipts", tags=["vision"])
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
@@ -37,7 +37,10 @@ def verify_receipt(request: Request, file: UploadFile = File(...), claimed_refer
             tx = s.get(Transaction, reference)
             if tx is None:
                 return None
-            return {"amount": tx.amount, "time": tx.event_time, "currency": tx.payload.get("currency")}
+            # Receipts show the amount the customer actually paid, in their currency, not our USD base.
+            local = tx.amount_local if tx.amount_local is not None else tx.payload.get("amount", tx.amount)
+            return {"amount": local, "time": tx.event_time,
+                    "currency": tx.currency or tx.payload.get("currency") or "USD"}
 
     try:
         result = c.verifier.verify(data, ledger, claimed_reference)
@@ -50,7 +53,7 @@ def verify_receipt(request: Request, file: UploadFile = File(...), claimed_refer
         s.add(r)
         s.flush()
         result["receipt_id"] = r.id
-    return result
+    return localize.receipt_result(result, locale_of(request))
 
 
 @router.get("", response_model=Page[ReceiptSummary])
@@ -66,4 +69,5 @@ def get_receipt(receipt_id: str, request: Request, _=Depends(require("analyst"))
         r = s.get(Receipt, receipt_id)
         if r is None:
             raise not_found("receipt")
-        return queries.receipt_dict(r, full=True)
+        out = queries.receipt_dict(r, full=True)
+        return {**out, "result": localize.receipt_result(out["result"], locale_of(request))}
