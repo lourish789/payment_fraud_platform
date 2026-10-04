@@ -1,321 +1,73 @@
-# PayGuard: real-time payment fraud platform
+# PayGuard
 
-A production-shaped fraud and financial-crime system that makes **every payment method reviewable**:
-cards, bank transfers, mobile money and crypto exchange deposits/withdrawals. All four go through one
-API, one decision record, one analyst queue and one investigation agent. It is built on real data:
-**590,540 card-not-present transactions** ([IEEE-CIS / Vesta](https://www.kaggle.com/c/ieee-fraud-detection)),
-**203,769 Bitcoin transactions** ([Elliptic++](https://huggingface.co/datasets/AI4FinTech/ellipticpp)) and
-the **OFAC SDN sanctioned-address list**.
+Real-time payment fraud platform covering cards, bank transfers, mobile money and crypto. It scores every
+payment through one API using a calibrated LightGBM model, per-rail risk logic, a rules engine and OFAC
+sanctions screening. Flagged payments go to an analyst case queue. An investigation agent (Claude, or a
+heuristic baseline) writes reports on cases, and a receipt checker verifies payment screenshots. A React web
+console covers analysts, merchants and admins, in English, French, Yorùbá, Hausa, Igbo and Pidgin, with
+amounts in USD or NGN.
 
-- **Real-time scoring API.** Atomic, idempotent streaming features; a calibrated LightGBM model; an
-  expected-loss decision policy; a rules engine; shadow scoring of a challenger model.
-- **Payment rails** ([docs/PAYMENT_RAILS.md](docs/PAYMENT_RAILS.md)). Each rail has its own risk logic:
-  - **Bank transfer:** authorised-push-payment scam and mule fan-in signals.
-  - **Mobile money:** SIM-swap and cash-out signals.
-  - **Crypto:** OFAC screening, an on-chain transaction model, point-in-time entity intelligence via
-    address clustering, exchange typologies (pass-through, collection addresses) and the FATF Travel Rule.
-  - Every decision also carries `required_actions`. For example, a crypto deposit can't be refused
-    on-chain, so it's frozen instead.
-- **Case management.** An analyst queue fed through a transactional outbox and an event bus.
-- **Investigation agent.** Claude with read-only, point-in-time tools, and a deterministic baseline it is
-  measured against.
-- **Receipt verification (computer vision).** Checks proof-of-payment screenshots: OCR, then reconciliation
-  against the ledger, then image forensics.
-- **Operations.** Drift monitoring, Prometheus metrics, degraded mode when the feature store is down, a runbook.
-- **Web console and admin dashboard** ([docs/FRONTEND.md](docs/FRONTEND.md)). A React + TypeScript single-page
-  app served by the API itself: an analyst workspace (case queue, explanations, agent reports, resolution),
-  a merchant scoring console, and an admin dashboard that reflects the whole system (traffic and decisions
-  per rail, the queue, live precision from labels, the agent, the event pipeline, models, rules, API keys,
-  audit log, component health). Role-aware: each key sees only what its API calls are allowed to serve.
-- **Currencies and languages.** Payments can arrive in naira or dollars (or any currency in
-  `configs/currency.yaml`). Risk is computed in USD and amounts are kept as paid; the console shows money in
-  USD or NGN. The console and the API's human-readable text (errors, decision reasons, explanations) are in
-  English, French, Yorùbá, Hausa, Igbo and Nigerian Pidgin, chosen per request or saved on the user's
-  profile ([ADR-19, ADR-20](docs/DECISIONS.md)).
-
-## Results
-
-Everything below is measured on **May 2018, a month the model never saw** (out-of-time test), and
-regenerated from artifacts by `python -m payguard.report`. Full tables are in [docs/EVALUATION.md](docs/EVALUATION.md).
-
-| | Result |
-|---|---|
-| **Model** | ROC-AUC 0.909, PR-AUC 0.527 (base rate 3.5%), 44.5% recall at 1% false-positive rate |
-| **Calibration** | Expected calibration error 0.0235 → **0.0027** after isotonic calibration |
-| **Money** | Policy stops **67% of fraud dollars** reviewing 3.4% of traffic: **$303k net** on the month, against $29k for hand-written rules |
-| **Training/serving skew** | **0 mismatches in 12.9 million feature values** (89,326 transactions replayed through the live API and compared with the training rows) |
-| **Latency** | Scoring path p50 5 ms, p95 12 ms, p99 57 ms in-process; p50 12 ms over HTTP; about 75 req/s per Python process on a laptop |
-| **Drift monitor** | Healthy traffic: `ok`. Simulated upstream data bug: `alert`, names the broken signal, flag rate 3.8% → 30.5% |
-| **Investigation agent** | Deterministic baseline: 86.0% accuracy against 83.0% for the model alone on the same 171 cases; 100% of report claims grounded in tool output |
-| **Receipt verification** | With ledger reconciliation: 100% of 4 forgery types caught, 100% of genuine receipts verified (synthetic set). Pixel forensics alone: 33–60% |
-| **Crypto transaction model** | Elliptic++, strict time-ordered split: illicit F1 0.723, precision 98%. F1 **0.87 before** a dark-market shutdown and **0.03 after**, for every model including Random Forest and graph features |
-| **Crypto counterparty intelligence** | Block threshold: flags 3.9% of test transactions at 89% precision and 60% recall. Address clustering through the scored transaction's co-inputs raises sender coverage from 27.5% to 35.9% |
-| **All rails, end to end** | `scripts/smoke_test.py`: 54/54 live checks, including NGN payments and translated errors. A real OFAC address is blocked on withdrawal and frozen on deposit; a real illicit Elliptic transaction is flagged and a licit one approved |
-
-Four things the card evaluation showed that I did not expect, and what I did about each:
-
-1. **The rules made things worse.** Model + all hand-written rules nets $264k, *less* than the model alone
-   ($303k). Every heuristic rule had marginal precision below the 3.4% base fraud rate. They now run in
-   shadow mode, measured but not enforced ([ADR-7](docs/DECISIONS.md)).
-2. **My streaming features add almost nothing on top of the processor's signals** (ROC-AUC 0.9082 → 0.9086).
-   Vesta's own columns are already velocity counts. They only pay off when no such signals exist
-   (0.824 → 0.835). The value demonstrated here is the skew-free pipeline, not the features.
-3. **The drift monitor alerted on healthy traffic.** Root cause: three features grew with the calendar
-   because the dataset is left-censored, and the source changed its browser string format between months.
-   Fixing it cost 0.004 ROC-AUC and made the monitor trustworthy ([ADR-11](docs/DECISIONS.md)).
-4. **Explanations were the latency problem.** TreeSHAP cost 60–100 ms per flagged transaction, against
-   1 ms to predict. It moved off the request path ([ADR-10](docs/DECISIONS.md)).
-
-The weakest slice is transactions over $1,000 (ROC-AUC 0.755), which is where fraud dollars concentrate.
-That is the next thing to fix.
-
-And four from the crypto work:
-
-1. **Elliptic++ wallet features leak the future.** All 55 are lifetime aggregates, identical at every
-   time step, so a wallet "knows" its last-seen block at its first appearance. I don't use them.
-2. **Graph structure buys very little under a strict time-ordered protocol.** A Random Forest on
-   transaction features ties the graph-feature model on F1. This matches a 2026 re-evaluation showing
-   that earlier GNN gains came from test-period graph leakage.
-3. **No model survives the dark-market shutdown** (F1 0.87 → 0.03). That is the argument for the
-   controls that don't depend on the model: sanctions screening, entity attribution, human review and
-   fast retraining.
-4. **Address-level history is weak on Bitcoin** because addresses are rarely reused. Entity resolution
-   through the scored transaction's co-inputs is what makes attribution carry over, which is how
-   commercial KYT systems use the common-input heuristic.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    M[Merchant / PSP / exchange] -->|POST /v1/payments/score<br/>card, bank_transfer, mobile_money, crypto| API
-    subgraph API[Scoring API - FastAPI]
-        direction TB
-        IDEM[Idempotency check] --> FS[Feature pipeline]
-        FS --> MOD[Champion model + calibration]
-        MOD --> POL[Expected-loss policy + rules]
-        MOD -.shadow.-> CH[Challenger model]
-    end
-    FS <-->|atomic WATCH/MULTI, deduped| REDIS[(Online store<br/>Redis)]
-    POL -->|one DB transaction:<br/>decision + case + outbox| PG[(Postgres)]
-    PG --> RELAY[Outbox relay] --> BUS[[Event bus<br/>Redis Streams]]
-    BUS -->|case.created| WK[Investigation worker]
-    WK --> AG[Agent: Claude or heuristic] -->|read-only, point-in-time tools| PG
-    A[Analyst / admin] -->|browser| UI[Web console<br/>React SPA, same origin] -->|queue, reports, resolve, admin| API2[Case + admin API] --> PG
-    A -->|receipt screenshot| CV[Receipt verifier<br/>OCR + ledger + ELA] --> PG
-    PG -->|labels| TRAIN[Offline training]
-    LOG[(Event log)] --> BF[Backfill: SAME feature code] --> TRAIN --> REG[(Model registry<br/>champion / challenger)] --> MOD
-    BF -->|snapshot| REDIS
-```
-
-**The idea that holds it together:** the offline backfill replays the event log through **the same
-`FeaturePipeline` the API calls**. Training rows are point-in-time correct by construction, and
-`payguard parity` proves the live API reproduces them exactly.
-
-| Concern | How it's handled | Where |
-|---|---|---|
-| Training/serving skew | One feature code path; parity audit on replayed traffic | `features/pipeline.py`, `simulate.py` |
-| Retries and double counting | Idempotency on `transaction_id` (409 on changed payload); feature-store dedupe key | `services/scoring.py`, `features/store.py` |
-| Concurrent updates to one card | Optimistic `WATCH`/`MULTI` transactions with retry | `features/store.py` |
-| Out-of-order events | Commutative decayed aggregates (property-tested) | `features/state.py` |
-| Lost or phantom events | Transactional outbox, at-least-once delivery, idempotent consumers | `events.py`, `workers.py` |
-| Feature store outage | Degraded scoring on request data, `degraded` flag, `/readyz` 503 | `services/scoring.py` |
-| Bad model release | Immutable versions, champion/challenger, shadow scoring, hot-swap promotion and rollback | `models/registry.py` |
-| Decision quality | Isotonic calibration, expected-loss policy under analyst capacity | `models/policy.py` |
-| Rule sprawl | Rules measured by marginal precision; losers run in shadow | `configs/rules.yaml` |
-| Model decay | PSI drift monitor against the validation reference; live precision from labels | `monitoring.py` |
-| Agent safety | Read-only tools, no label leakage, sanitised untrusted text, grounded citations | `agent/` |
-| Abuse | Hashed API keys, roles, token-bucket rate limits (Redis-backed for multiple replicas) | `api/security.py` |
-
-Design rationale and trade-offs: [docs/DECISIONS.md](docs/DECISIONS.md). Latest QA pass: [docs/QA_REPORT.md](docs/QA_REPORT.md).
-All numbers: [docs/EVALUATION.md](docs/EVALUATION.md). Operations: [docs/RUNBOOK.md](docs/RUNBOOK.md).
-
-## Quick start
+## Run locally
 
 ```bash
-python -m venv .venv && .venv/Scripts/activate        # or source .venv/bin/activate
+git clone https://github.com/lourish789/payment_fraud_platform.git
+cd payment_fraud_platform
+
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e ".[vision,dev]"
 
-payguard ingest        # download from the HF mirror, sha256-verify, normalise to Parquet (~2 min)
-payguard backfill      # offline features via the serving code, plus online snapshot (~6 min)
-payguard train         # train, calibrate, fit policy, evaluate, register (~10 min with ablations)
-payguard crypto-ingest # Elliptic++ + OFAC SDN addresses (~1 GB)
-payguard crypto-train  # on-chain transaction model, strict time-ordered evaluation (~9 min)
-payguard crypto-intel  # address/entity intelligence store + counterparty-risk combiner (~5 min)
+# Use the bundled model, or train your own: payguard ingest && payguard backfill && payguard train
+cp -r deploy/bundle artifacts
 
-payguard create-client --name shop --role merchant    # prints an API key (shown once)
-payguard create-client --name ops  --role analyst
-payguard create-client --name me   --role admin --locale yo --currency NGN   # optional profile
-cd frontend && npm ci && npm run build && cd ..        # web console -> frontend/dist
-payguard serve                                         # console at http://127.0.0.1:8000, API docs at /docs
+payguard create-client --name me --role admin          # prints an API key (shown once)
+cd frontend && npm ci && npm run build && cd ..
+payguard serve                                         # console: http://127.0.0.1:8000  API docs: /docs
 ```
 
-Console development with hot reload: `cd frontend && npm run dev` (port 5173, proxies `/v1` to the API on
-8000). One-command deploy: `docker build -t payguard .` builds the console and the API into one image.
-
-```bash
-curl -s localhost:8000/v1/transactions/score -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{
-  "transaction_id": "demo-1", "event_time": "2018-05-02T10:00:00Z", "amount": 950.0, "product_code": "C",
-  "card": {"bin": "9500", "issuer": "111", "country_code": "150", "category_code": "226", "network": "visa", "type": "debit"},
-  "billing": {"region": "299", "country": "87"}, "payer_email_domain": "gmail.com",
-  "device": {"type": "mobile", "info": "iOS Device", "os": "iOS 11.2.1", "browser": "mobile safari 11.0", "screen": "2436x1125"},
-  "signals": {"C1": 3, "C13": 1, "C14": 1, "D1": 0}
-}'
-```
-
-Reproduce the evaluation:
-
-```bash
-payguard replay            # score the May test month through the real service; delayed labels
-payguard parity            # training/serving skew audit
-payguard agent-eval --n 200 --provider heuristic   # or --provider claude with ANTHROPIC_API_KEY set
-payguard vision-eval
-payguard drift-demo
-payguard loadtest --key $KEY --n 2000 --concurrency 4 --label "API only"   # against a running `payguard serve`
-python -m payguard.report  # regenerates docs/EVALUATION.md from artifacts/
-pytest                     # 63 tests (-m "not slow" skips the OCR test)
-cd frontend && npm test && npm run typecheck   # console unit tests + strict TypeScript
-```
-
-`run_all.sh` runs backfill, train, replay, parity, the agent eval and the drift drill in one go (about 40
-minutes on a laptop).
-
-End-to-end check of **every HTTP endpoint** against a running server, using 600 real test-month
-transactions as sample data, plus real OFAC addresses and real Elliptic transactions for crypto. It runs 48
-checks: auth and roles, validation, scoring, idempotency, cases, explanations, receipts, the agent, feedback,
-every payment rail, drift, the registry and metrics.
-
-```bash
-payguard serve --port 8020        # after creating merchant, analyst and admin keys with create-client
-python scripts/smoke_test.py --url http://127.0.0.1:8020 --merchant-key $M --analyst-key $A --admin-key $ADM
-```
-
-Full stack (Postgres, Redis and separate worker processes): `docker compose up` (see the header of
-`docker-compose.yml`).
+To work on the frontend with hot reload, run `cd frontend && npm run dev`. It serves on :5173 and proxies to the API.
+To run the tests: `pytest` and `cd frontend && npm test`. To bring up the full stack with Postgres and Redis, run `docker compose up`.
 
 ## Deploy on Render
 
-`render.yaml` is a Blueprint for three resources: the API as a Docker web service, the console as a static site, and a
-free Postgres. In the Render dashboard choose **New -> Blueprint** and pick this repo. Render then asks for:
+`render.yaml` sets up the API (Docker), the console (static site) and a Postgres database.
 
-- `PAYGUARD_BOOTSTRAP_ADMIN_KEY`: a long random string (at least 24 characters). On startup the API creates an admin
-  client with this key. Paste it into the console's login screen.
-- `ANTHROPIC_API_KEY` (optional): turns on the Claude investigation agent. Without it the heuristic agent runs.
+1. In the Render dashboard, choose **New → Blueprint** and select this repo.
+2. Set `PAYGUARD_BOOTSTRAP_ADMIN_KEY` to a random string of at least 24 characters. Use it to sign in to the console.
+3. Optional: set `ANTHROPIC_API_KEY` to turn on the Claude investigation agent.
 
-The console is built with `VITE_API_URL=https://payguard-api.onrender.com`, and the API allows that origin through
-`PAYGUARD_CORS_ORIGINS`. If Render gives either service a different hostname, update both values. The image ships the
-champion card model from `deploy/bundle/`. The 500 MB crypto intel store is not included, so the crypto rail runs
-on sanctions screening and its behavioural scorecard. Free instances sleep when idle, and Render's free Postgres expires
-after 30 days.
+If Render assigns different hostnames, update `VITE_API_URL` (console) and `PAYGUARD_CORS_ORIGINS` (API) to match.
 
 ## API
 
-Every route is versioned under `/v1`, declares a typed response model (complete OpenAPI at `/docs`), is
-role-gated, and returns errors in one envelope: `{"error": {"code", "message", "request_id", "details?"}}`,
-where `request_id` matches the `x-request-id` header and the logs. Lists are paginated
-(`{items, total, limit, offset}`) and filterable.
+Send the key as `Authorization: Bearer <key>`. Interactive docs are at `/docs`.
 
-Money and language:
-- **Money.** Send `amount` in its own `currency` (`USD` or `NGN`; crypto uses the asset ticker and must send
-  `amount_usd`). Risk is computed in USD. Responses return `amount_usd`, the applied `fx_rate`,
-  `expected_loss` (USD) and `expected_loss_local`. Listings report `amount` in USD plus `currency` and
-  `amount_local` as paid.
-- **Language.** Human-readable text follows `?lang=`, then the key's profile language, then
-  `Accept-Language`. Codes (`error.code`, reason codes, rule ids, `required_actions`) never change with
-  the language. Every response says which language it used in `Content-Language`.
+| Endpoint | Role | Purpose |
+|---|---|---|
+| `POST /v1/payments/score` | merchant | Score a payment on any rail |
+| `GET /v1/transactions[/{id}]` | analyst | Browse scored transactions |
+| `GET /v1/cases[/{id}]`, `POST /v1/cases/{id}/resolve` | analyst | Case queue and resolution |
+| `POST /v1/cases/{id}/investigate`, `GET /v1/investigations` | analyst | Run and read agent investigations |
+| `POST /v1/receipts/verify` | merchant, analyst | Verify a payment screenshot |
+| `GET/POST /v1/labels`, `GET /v1/monitoring/drift` | analyst | Fraud labels and drift report |
+| `GET /v1/models`, `POST /v1/models/promote` | admin | Model registry |
+| `GET /v1/admin/*` | admin | Overview, rails, rules, events, API keys, audit log |
+| `GET /v1/auth/me`, `GET /v1/meta` | any | Caller identity, languages and currencies |
+| `GET /healthz`, `/readyz`, `/metrics` | none | Health and Prometheus metrics |
 
-| Method | Path | Role | Purpose |
-|---|---|---|---|
-| GET | `/v1/auth/me` | any | Identity, role, permissions and preferences of the calling key (the console's login) |
-| PATCH | `/v1/auth/me/preferences` | any | The key's language (`en`, `fr`, `yo`, `ha`, `ig`, `pcm`) and display currency (`USD`, `NGN`); audited |
-| GET | `/v1/meta` | - | Supported languages, currencies and reference FX rates (public: the sign-in page needs it) |
-| POST | `/v1/payments/score` | merchant | Any rail (`rail`: card, bank_transfer, mobile_money, crypto): decision, risk, reasons, `required_actions` (idempotent) |
-| POST | `/v1/transactions/score` | merchant | Card-only endpoint (same pipeline), kept for compatibility |
-| GET | `/v1/transactions` | analyst | Paginated; filter by rail, decision, label, id prefix, time, amount, client |
-| GET | `/v1/transactions/{id}` | analyst | Payload, decision, shadow score, label, case |
-| GET | `/v1/cases` | analyst | Queue ordered by expected loss; filter by status, rail, decision, resolution |
-| GET | `/v1/cases/{id}` | analyst | Case, payload, decision, explanation, investigations, receipts |
-| POST | `/v1/cases/{id}/resolve` | analyst | Analyst decision; records the label; audited |
-| POST | `/v1/cases/{id}/investigate` | analyst | Run the agent on the interactive lane (outbox event `investigation.requested`) |
-| GET | `/v1/investigations`, `/v1/investigations/{id}?include_trace=true` | analyst | Reports, and the full tool trace |
-| GET / POST | `/v1/labels` | analyst | List labels / bulk delayed labels (chargeback feed) |
-| POST | `/v1/receipts/verify` | merchant, analyst | Proof-of-payment screenshot verification (optionally attached to a case) |
-| GET | `/v1/receipts`, `/v1/receipts/{id}` | analyst | Verified receipts and full results |
-| GET | `/v1/monitoring/drift` | analyst | PSI drift report |
-| GET | `/v1/models`, `/v1/models/{version}` | admin | Registry and a version's training metadata and evaluation |
-| POST | `/v1/models/promote` | admin | Champion/challenger promotion (hot swap); audited |
-| GET | `/v1/admin/overview` | admin | Whole-system KPIs for a time window (`window`, `anchor`, `from`/`to`) |
-| GET | `/v1/admin/timeseries` | admin | Decisions and amounts per hour/day, overall and per rail |
-| GET | `/v1/admin/rails`, `/v1/admin/rules` | admin | Rail configuration and traffic; every rule with mode and hit counts |
-| GET | `/v1/admin/events` | admin | Outbox backlog per topic and recent events |
-| GET / POST | `/v1/admin/clients`, `/v1/admin/clients/{id}/revoke` | admin | API keys: list, issue (shown once), revoke (immediate); audited |
-| GET | `/v1/admin/audit`, `/v1/admin/system` | admin | Audit log; components, health and non-secret settings |
-| GET | `/healthz`, `/readyz`, `/metrics` | - | Liveness, readiness (DB, store, model), Prometheus |
-
-## Repository layout
-
-```
-src/payguard/
-  data/        ingest (download + verify), adapter (IEEE row -> canonical schema), out-of-time splits
-  features/    decayed-aggregate state, online stores (memory / Redis), card pipeline, rail entities, backfill
-  models/      encoder, training + evaluation, calibration, expected-loss policy, registry
-  services/    scoring service (shared request path), per-rail scorers, async TreeSHAP explanations,
-               queries.py (read models), admin.py (dashboard aggregates), audit.py
-  api/         FastAPI app factory, routers/ (one per resource), dto.py (response models), errors.py
-               (error envelope), deps.py (auth, roles, pagination), security.py (keys + rate limiting)
-  agent/       investigation tools (rail-aware), Claude + heuristic providers, evaluation harness
-  crypto/      Elliptic++ ingest, transaction risk model, OFAC screening, entity clustering, address intelligence
-  vision/      receipt rendering/forgery (evaluation), OCR + ledger + ELA verifier, evaluation
-  events.py    outbox + event bus        workers.py   relay + investigation consumer
-  rules.py     declarative rules          monitoring.py  PSI drift
-  simulate.py  replay, parity, load test, drift drill
-frontend/      web console: React + TypeScript + Vite (src/api typed client, src/features one folder per page)
-scripts/       smoke_test.py: end-to-end check of every endpoint with real sample transactions
-configs/       rules.yaml, policy.yaml, prometheus.yml, rails/{bank_transfer,mobile_money,crypto}.yaml
-docs/          DECISIONS.md, EVALUATION.md (generated), RUNBOOK.md, PAYMENT_RAILS.md, FRONTEND.md, QA_REPORT.md
-tests/         63 tests: currencies and languages, admin API + error envelope + console serving, feature math + stationarity, store parity, API contracts, concurrency, agent loop + safety,
-               vision, every payment rail (sanctions, mule fan-in, SIM swap, pass-through, Travel Rule)
+```bash
+curl -X POST localhost:8000/v1/payments/score -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" -d '{
+    "rail": "card", "transaction_id": "demo-1", "event_time": "2026-10-04T10:00:00Z",
+    "amount": 950.0, "currency": "USD", "product_code": "C", "payer_email_domain": "gmail.com",
+    "card": {"bin": "9500", "issuer": "111", "country_code": "150", "category_code": "226", "network": "visa", "type": "debit"}
+  }'
 ```
 
-## Honest limitations
+## Docs
 
-- **Translations need a native-speaker review.** French is solid. The Yorùbá, Hausa, Igbo and Pidgin
-  catalogs were drafted without a native-speaker review and should get one before real users rely on them.
-  Free-text reports written by the LLM agent are not translated.
-- **FX rates are static reference rates** in `configs/currency.yaml`, not a live feed. Callers that convert
-  at their own rate should send `amount_usd`, which always wins.
-
-- **The console signs in with API keys, not SSO.** Keys live in `sessionStorage` under a strict CSP; a
-  production deployment for a bank would put OIDC SSO with short-lived sessions in front (see
-  [docs/FRONTEND.md](docs/FRONTEND.md)).
-
-- **The non-card rails have no labelled training data.** Bank transfer and mobile money run transparent
-  scorecards whose points are research-based priors (in YAML, each with its reason). They are not fitted
-  weights. Analyst resolutions and chargebacks feed the labels table that a trained model will need.
-- **The crypto data is Bitcoin from 2016-17.** On-chain intelligence (the transaction model and address
-  clustering) exists only for Bitcoin. Account-based chains (Ethereum, Tron) need different entity
-  resolution, so on them the crypto rail runs sanctions screening, the behavioural scorecard and the
-  Travel Rule, and labels its model version accordingly. Exposure is one hop and count-based, not
-  multi-hop value-weighted tracing.
-- **Exchange-behaviour typologies are tested on constructed scenarios.** Pass-through, collection
-  addresses and new-account withdrawals are checked in `tests/test_rails.py`, not on a real exchange
-  ledger. There is no public labelled one.
-
-- **The data is real, but the setting is e-commerce cards in 2017-18.** It is not Nigerian mobile money.
-  The schema and policy are generic, and the receipt-verification module targets the fake-transfer-alert
-  fraud common with Nigerian merchants, but the model numbers describe IEEE-CIS only.
-- **Entity keys are proxies.** IEEE-CIS has no card or device IDs. `customer` = card profile + billing
-  region + email, and `device` is a coarse fingerprint (see `features/pipeline.py`).
-- **The vision evaluation is synthetic** (generated receipts from fictional banks), because no public
-  labelled forgery set exists. Ledger reconciliation carries the real guarantee.
-- **Labels in the replay arrive with a simulated delay** (exponential, mean 5 days). Real chargeback
-  windows are longer.
-- **The Claude agent has not been run against the live API.** No API key was available when this was built.
-  The agent numbers are for the deterministic provider. The Claude tool loop is tested against a scripted
-  client (`tests/test_claude_loop.py`), and `payguard agent-eval --provider claude` runs the same evaluation
-  once a key is set. Whether an LLM beats the deterministic baseline is an open question this repo is set
-  up to answer, not one it has answered.
-- **Numbers were measured on a 4-core laptop with SQLite.** One Python process saturates at about 75
-  requests/s. The Docker/Postgres/Redis topology is provided but was not run in this environment (no Docker
-  available), so multi-process scaling is untested. The Redis code paths are tested against `fakeredis`.
-- **The money figures rest on stated assumptions:** analysts confirm the fraud they review, a review costs
-  $5, and a false decline costs 10% of the amount.
+- [Payment rails](docs/PAYMENT_RAILS.md): per-rail risk logic
+- [Evaluation](docs/EVALUATION.md): model results
+- [Design decisions](docs/DECISIONS.md)
+- [Web console](docs/FRONTEND.md)
+- [Runbook](docs/RUNBOOK.md)
+- [QA report](docs/QA_REPORT.md)
